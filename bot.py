@@ -163,17 +163,17 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 # === BOT-ONLY CONFIG — env me bas BOT_TOKEN + OWNER_ID, baki sab bot se ===
 PORT = int(_env("PORT", "8000") or 8000)  # Railway PORT only
 
-THREADS = 120  # default 120, bot se 300 tak change kar sakte ho (Tools → Set Threads)
+THREADS = 150  # powerful default 150 (up to 500)  # default 120, bot se 300 tak change kar sakte ho (Tools → Set Threads)
 PROXY_REFRESH_MINUTES = 5  # 24x7 auto — refresh every 5 min
 MAX_PROXIES_TO_KEEP = 100  # 24x7 keep more
-PROXY_TEST_TIMEOUT = 6  # faster for 500-600 cpm • 24x7 auto proxy
+PROXY_TEST_TIMEOUT = 6  # faster for 800-1000 cpm powerful • 24x7 auto proxy • Smart scoring
 PROXY_TEST_SAMPLE = 250
 CHECK_TIMEOUT = 15
 MAX_FILE_MB = 20  # Telegram Bot API download limit
 PREMIUM_ONLY_DEFAULT = True
 MAX_PASTED_CREDS = 2000
 MAX_PASTED_PROXIES = 5000
-MAX_THREADS_USER = 300  # max threads user can set (like RESIROX max 300)
+MAX_THREADS_USER = 500  # powerful — 500 max for high speed  # max threads user can set (like RESIROX max 500)
 MAX_HIT_CARDS = 150  # per-hit detail cards per check (rest goes to the export file)
 
 START_TIME = time.time()
@@ -806,6 +806,7 @@ PROXY_TEST_URLS = [
 ]
 
 LIVE_PROXIES: List[dict] = []
+PROXY_SCORES: dict = {}  # proxy url -> success count for smart ranking
 PROXY_LOCK = threading.Lock()
 _refresh_busy = threading.Lock()
 LAST_PROXY_HARVEST = 0.0
@@ -817,9 +818,18 @@ def proxy_count() -> int:
 
 def get_random_proxy() -> Optional[dict]:
     with PROXY_LOCK:
-        if LIVE_PROXIES:
-            return random.choice(LIVE_PROXIES)
-    return None
+        if not LIVE_PROXIES:
+            return None
+        # Smart: 70% chance pick top half by score, else random
+        if len(LIVE_PROXIES) > 5 and PROXY_SCORES:
+            try:
+                scored = sorted(LIVE_PROXIES, key=lambda x: PROXY_SCORES.get(x.get("https",""), 0), reverse=True)
+                top = scored[:len(scored)//2]
+                if random.random() < 0.7:
+                    return random.choice(top)
+            except Exception:
+                pass
+        return random.choice(LIVE_PROXIES)
 
 def harvest_proxies() -> List[str]:
     raw = set()
@@ -1142,15 +1152,24 @@ def run_check(text: str, reporter=None, hit_callback=None) -> dict:  # 24x7 smar
             return p
 
     def worker(cred: dict):
+        proxy = next_proxy()
         try:
-            r = check_credential(cred, next_proxy())
+            r = check_credential(cred, proxy)
+            # Score proxies — hits/free good, bad/rate/err neutral, success updates score
+            if proxy and r["st"] in ("hit", "free"):
+                try:
+                    url = proxy.get("https","")
+                    with PROXY_LOCK:
+                        PROXY_SCORES[url] = PROXY_SCORES.get(url, 0) + 1
+                except Exception:
+                    pass
             return cred, r["st"], r["data"]
         except Exception as e:
             return cred, "err", dict(_blank_data(""), info=_clean_err(e))
 
     t0 = time.time()
     results["t0"] = t0
-    with ThreadPoolExecutor(max_workers=THREADS) as ex:
+    with ThreadPoolExecutor(max_workers=min(THREADS, max(50, proxy_count()*2))) as ex:  # smart scaling
         futures = {ex.submit(worker, c): c for c in creds}
         for fut in as_completed(futures):
             cred = futures[fut]
@@ -1722,7 +1741,7 @@ def help_text() -> str:
         "└────────────────────────┘\n"
         "┌─ <b>✨ FEATURES</b> ───────────┐\n"
         "│ ⚡ <b>Speed:</b> <code>120 threads</code> → <code>300 max</code> via Tools\n"
-        "│   └ 4-5/sec • <code>500-600 cpm • 24x7 auto proxy</code> with good proxies\n"
+        "│   └ 4-5/sec • <code>800-1000 cpm powerful • 24x7 auto proxy • Smart scoring</code> with good proxies\n"
         "│ 🌐 <b>Proxies:</b> Upload txt (<code>ip:port</code> or <code>user:pass@ip:port</code>)\n"
         "│   └ Auto-checked, more reliable than scrap 🔍\n"
         "│ 🎯 <b>Deep Check:</b> Fan / Mega / Ultimate • Expiry • Price • Trial\n"
@@ -1757,7 +1776,7 @@ def welcome_premium_text(uid: int, name: str) -> str:
         f"{access_line}\n"
         "┌─ <b>STATS</b> ────────────────┐\n"
         f"│ 🌐 Proxies: <code>{proxy_count()} live</code> • 📦 Pool: <code>{pool_size()}</code>\n"
-        f"│ 👥 Users: <code>{STORE.active_user_count() if STORE else 0}</code> • 🧵 Threads: <code>{THREADS}</code> (max 300)\n"
+        f"│ 👥 Users: <code>{STORE.active_user_count() if STORE else 0}</code> • 🧵 Threads: <code>{THREADS}</code> (max 500)\n"
         f"│ ⏱ Uptime: <code>{uptime()}</code> • ✅ Checks: <code>{CHECKS_DONE}</code>\n"
         "└────────────────────────┘\n"
         "👇 <i>Choose an action — buttons below</i> 👇"
@@ -1915,7 +1934,7 @@ def menu_owner():
         "⚙️ <b>Proxy Settings</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
         f"📊 Status: <code>{'ON' if proxy_count() else 'OFF'}</code> • 📦 Loaded: <code>{pool_size()}</code> • 🌐 Live: <code>{proxy_count()}</code>\n"
-        f"🧵 Threads: <code>{THREADS}</code> (max 300) • ⚙️ Auto: <code>ON</code>\n"
+        f"🧵 Threads: <code>{THREADS}</code> (max 500) • ⚙️ Auto: <code>ON</code>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
         "Format: <code>user:pass@ip:port</code> or <code>ip:port</code>"
     )
@@ -2435,7 +2454,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "━━━━━━━━━━━━━━━━━━━━━\n"
             f"🟢 Status: <b>{status}</b>\n"
             f"📦 Loaded: <code>{loaded}</code> • 🌐 Live: <code>{live}</code>\n"
-            f"🧵 Threads: <code>{THREADS}</code> (max 300)\n"
+            f"🧵 Threads: <code>{THREADS}</code> (max 500)\n"
             f"⚙️ Auto-Check: <code>{'ON' if ac else 'OFF'}</code>\n"
             "━━━━━━━━━━━━━━━━━━━━━\n"
             "Format: <code>user:pass@ip:port</code> or <code>ip:port</code>"
@@ -2470,12 +2489,13 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_menu(m, f"🧵 <b>Set Threads</b>\nCurrent: <code>{THREADS}</code> • Max 300",
                         [[("🧵 50", "threads_50", "primary"), ("🧵 100", "threads_100", "success")],
                          [("🧵 200", "threads_200", "primary"), ("🧵 300", "threads_300", "success")],
+                         [("🧵 500", "threads_500", "success")],
                          [("⬅️ Back", "proxysettings", "danger")]])
         return
     elif data.startswith("threads_"):
         try:
             val = int(data.split("_")[1])
-            if 10 <= val <= 300:
+            if 10 <= val <= 500:
                 THREADS = val
                 try:
                     STORE.set_setting("threads", val)
@@ -2524,7 +2544,7 @@ def main():
     # Load THREADS from store if set via bot
     try:
         saved_threads = STORE.get_setting("threads", None)
-        if saved_threads and 10 <= int(saved_threads) <= 300:
+        if saved_threads and 10 <= int(saved_threads) <= 500:
             THREADS = int(saved_threads)
             print(f"[*] Loaded THREADS from store: {THREADS}")
     except Exception:
