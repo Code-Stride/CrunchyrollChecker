@@ -2702,24 +2702,11 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_menu(m, status_text(), [[("⬅️ Back", "menu", "danger")]])
         return
     elif data == "proxysettings":
-        ac = bool(STORE.get_setting("auto_check", True))
-        status = "🟢 ON" if proxy_count() > 0 else "🔴 OFF"
-        loaded = pool_size()
-        live = proxy_count()
-        text = (
-            "🔵 <b>Proxy Settings</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🟢 Status: <b>{status}</b>\n"
-            f"📦 Loaded: <code>{loaded}</code> • 🌐 Live: <code>{live}</code>\n"
-            f"🧵 Threads: <code>{THREADS}</code> (max 500)\n"
-            f"⚙️ Auto-Check: <code>{'ON' if ac else 'OFF'}</code>\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n"
-            "Format: <code>user:pass@ip:port</code> or <code>ip:port</code>"
-        )
-        await edit_menu(m, text,
-                        [[("🔵 Disable Proxies", "disableproxies", "primary"), ("📤 Upload Proxies", "addpx", "success")],
-                         [("🧵 Set Threads", "setthreads", "primary"), ("🧹 Clear Proxies", "clearpool", "danger")],
-                         [("⬅️ Back", "menu", "danger")]])
+        if not is_admin(uid, getattr(user, "username", None)):
+            await edit_menu(m, f"❌ <b>Access Denied</b>\nOwner/Admins only.\nContact: <a href=\"https://t.me/blaze_nxt\">@blaze_nxt</a> (<code>{OWNER_ID}</code>)", [[("💬 Contact Owner", "https://t.me/blaze_nxt", "primary")]])
+            return
+        text, rows = menu_owner()
+        await edit_menu(m, text, rows)
         return
     elif data == "opanel":
         text, rows = menu_owner()
