@@ -1455,9 +1455,9 @@ def run_check(text: str, reporter=None, hit_callback=None, uid: int = None) -> d
 
     lock = threading.Lock()
 
-    # USER ISOLATION + PROXY ROTATION FIX - each user isolated, auto rotation, fixes rate limit
+    # USER ISOLATION + PROXY ROTATION FIX
     with PROXY_LOCK:
-        local_proxies = list(LIVE_PROXIES)  # copy for this user only - isolated
+        local_proxies = list(LIVE_PROXIES)
         local_manual = set(MANUAL_PROXY_URLS)
     local_idx = [0]
 
@@ -1466,7 +1466,7 @@ def run_check(text: str, reporter=None, hit_callback=None, uid: int = None) -> d
         if not local_proxies:
             with PROXY_LOCK:
                 if LIVE_PROXIES:
-                    local_proxies = list(LIVE_PROXIES)[:100]  # refill for bulk
+                    local_proxies = list(LIVE_PROXIES)[:100]
             if not local_proxies:
                 return None
         auto_indices = [i for i, p in enumerate(local_proxies) if p.get("https") not in local_manual]
@@ -1503,7 +1503,7 @@ def run_check(text: str, reporter=None, hit_callback=None, uid: int = None) -> d
                 time.sleep(0.5)
                 if STOP_REQUEST.get(uid):
                     return cred, "stopped", _blank_data("")
-        for attempt in range(3):  # retry 3 times with different proxies on rate limit
+        for attempt in range(3):
             proxy = next_proxy()
             try:
                 r = check_credential(cred, proxy)
@@ -2004,7 +2004,6 @@ def progress_text(res: dict) -> str:
     total = res.get("total", 0)
     processed = res.get("processed", 0)
     pct = (processed / total * 100) if total else 0
-    # bar
     filled = int(pct / 100 * 18)
     bar = "█" * filled + "░" * (18 - filled)
     hits = len(res.get('hits', []))
@@ -2012,10 +2011,8 @@ def progress_text(res: dict) -> str:
     twofa = res.get('twofa', 0)
     bad = res.get('bad', 0)
     err = res.get('err', 0)
-    rate = res.get('rate', 0)
     cpm = res.get('cpm', 0)
     elapsed = res.get('elapsed', 0)
-    # ETA calc
     try:
         rate_per_sec = processed / elapsed if elapsed > 0 else 0
         remaining = total - processed
@@ -2025,12 +2022,10 @@ def progress_text(res: dict) -> str:
     except:
         elapsed_str = f"{int(elapsed)}s"
         eta_str = "—"
-    # in flight = threads
     try:
         inflight = min(THREADS, total - processed)
     except:
         inflight = 0
-    # live feed
     feed = res.get('live_feed', []) or []
     feed_lines = ""
     for f in feed[-2:]:
@@ -2255,6 +2250,135 @@ def welcome_premium_text(uid: int, name: str) -> str:
         f"Proxies: <code>{proxy_count()} live</code> | Pool: <code>{pool_size()}</code>\n"
         f"Uptime: <code>{uptime()}</code>\n"
     )
+
+# ===================== BUTTON MENUS =====================
+CUSTOM_EMOJI_ID = "5319302927281177662"
+_CAPS = {"icon": None, "style": None}
+PREMIUM_EMOJI = {}
+
+def _premium_wrap(text: str) -> str:
+    return text
+
+BLAZENXT_RIBBON = ""
+BLAZENXT_BRAND = "<b>BlazeNXT</b>"
+DEVELOPER_BRANDING = 'Developed by : <a href="https://t.me/blaze_nxt">BlazeNXT</a>'
+
+def _build_kb(rows) -> InlineKeyboardMarkup:
+    use_style = _CAPS["style"] is not False
+    data = []
+    for row in rows or []:
+        line = []
+        for item in row:
+            if not item:
+                continue
+            label = item[0]
+            cb = item[1] if len(item) > 1 else None
+            style = item[2] if len(item) > 2 else None
+            kwargs = {}
+            is_url = isinstance(cb, str) and (cb.startswith("tg://") or cb.startswith("https://") or cb.startswith("http://"))
+            if style and use_style and style in ("primary","success","danger") and not is_url:
+                kwargs["style"] = style
+            if is_url:
+                line.append(InlineKeyboardButton(label, url=cb, **kwargs))
+            else:
+                line.append(InlineKeyboardButton(label, callback_data=cb, **kwargs))
+        if line:
+            data.append(line)
+    return InlineKeyboardMarkup(data)
+
+async def _send_menu(msg, text: str, rows, edit: bool) -> bool:
+    text = text
+    for _attempt in range(4):
+        use_icon = _CAPS["icon"] is not False
+        use_style = _CAPS["style"] is not False
+        kb = _build_kb(rows)
+        try:
+            if edit:
+                await msg.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+            else:
+                await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+            if use_icon:
+                _CAPS["icon"] = True
+            if use_style:
+                _CAPS["style"] = True
+            return True
+        except BadRequest as e:
+            s = str(e).lower()
+            if "message is not modified" in s:
+                return True
+            if use_icon and ("emoji" in s or "icon" in s):
+                _CAPS["icon"] = False
+                continue
+            if use_style and "style" in s:
+                _CAPS["style"] = False
+                continue
+            logger.warning("menu send failed: %s", e)
+            return False
+    return False
+
+async def reply_menu(msg, text, rows):
+    return await _send_menu(msg, text, rows, edit=False)
+
+async def edit_menu(msg, text, rows):
+    return await _send_menu(msg, text, rows, edit=True)
+
+def _build_reply_kb(rows, resize=True, one_time=False):
+    return None
+def main_reply_kb(is_owner: bool):
+    return None
+def owner_reply_kb():
+    return None
+def gen_reply_kb():
+    return None
+REPLY_TEXT_MAP = {}
+
+async def _send_reply_menu(msg, text: str, reply_kb, inline_rows=None):
+    return False
+async def _edit_or_send_reply(msg, text: str, reply_kb):
+    return False
+
+PENDING: Dict[int, dict] = {}
+PENDING_LOCK = threading.Lock()
+
+def set_pending(uid: int, kind: str, **kw):
+    with PENDING_LOCK:
+        PENDING[uid] = {"kind": kind, **kw}
+
+def get_pending(uid: int):
+    with PENDING_LOCK:
+        return PENDING.get(uid)
+
+def clear_pending(uid: int):
+    with PENDING_LOCK:
+        PENDING.pop(uid, None)
+
+def _has_access(uid: int, username: str = None) -> bool:
+    try:
+        return is_admin(uid, username)
+    except Exception:
+        try:
+            return is_admin(uid)
+        except Exception:
+            return False
+
+def _is_owner(uid: int, username: str = None) -> bool:
+    try:
+        if uid and OWNER_ID and uid == OWNER_ID:
+            return True
+    except Exception:
+        pass
+    try:
+        if username and OWNER_USERNAME:
+            if str(username).lstrip("@").lower() == OWNER_USERNAME.lstrip("@").lower():
+                return True
+    except Exception:
+        pass
+    return False
+
+# ===================== MENU DEFINITIONS v1 =====================
+AIO_SERVICES = [
+    [("🍥 CRUNCHYROLL", "check", "success")],
+]
 
 def menu_main(uid: int, username: str = None):
     try:
