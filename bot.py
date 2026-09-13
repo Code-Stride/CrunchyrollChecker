@@ -1699,7 +1699,8 @@ BLAZENXT_RIBBON = ""
 BLAZENXT_BRAND = "<b>BlazeNXT</b>"
 
 def _build_kb(rows) -> InlineKeyboardMarkup:
-    """rows: list of rows; each row = list of (label, cb) or (label, cb, style) or (label, cb, style, icon)."""
+    """rows: list of rows; each row = list of (label, cb) or (label, cb, style)."""
+    use_style = _CAPS["style"] is not False
     data = []
     for row in rows or []:
         line = []
@@ -1708,8 +1709,11 @@ def _build_kb(rows) -> InlineKeyboardMarkup:
                 continue
             label = item[0]
             cb = item[1] if len(item) > 1 else None
-            # Plain button without premium icons
-            line.append(InlineKeyboardButton(label, callback_data=cb))
+            style = item[2] if len(item) > 2 else None
+            kwargs = {}
+            if style and use_style and style in ("primary","success","danger"):
+                kwargs["style"] = style
+            line.append(InlineKeyboardButton(label, callback_data=cb, **kwargs))
         if line:
             data.append(line)
     return InlineKeyboardMarkup(data)
@@ -1755,12 +1759,38 @@ async def edit_menu(msg, text, rows):
 # Hybrid: main menus use ReplyKeyboardMarkup (persistent bottom keyboard),
 # sub-menus still use InlineKeyboardMarkup. This matches user choice "hybrid".
 def _build_reply_kb(rows, resize=True, one_time=False) -> ReplyKeyboardMarkup:
+    """rows: each item can be (label), (label,style) or dict."""
+    use_style = _CAPS["style"] is not False
     kb = []
     for row in rows:
         btns = []
         for item in row:
-            label = item[0] if isinstance(item, (list, tuple)) else str(item)
-            btns.append(KeyboardButton(label))
+            label = ""
+            style = None
+            web_app = None
+            if isinstance(item, (list, tuple)):
+                label = item[0] if len(item) > 0 else ""
+                style = item[1] if len(item) > 1 else None
+                web_app = item[2] if len(item) > 2 else None
+            elif isinstance(item, dict):
+                label = item.get("text", "")
+                style = item.get("style")
+                web_app = item.get("web_app") or item.get("web_app_url")
+            else:
+                label, style = str(item), None
+            kwargs = {}
+            if style and use_style and style in ("primary","success","danger"):
+                kwargs["style"] = style
+            if web_app:
+                try:
+                    from telegram import WebAppInfo as _WAI
+                    if isinstance(web_app, str):
+                        kwargs["web_app"] = _WAI(url=web_app)
+                    else:
+                        kwargs["web_app"] = web_app
+                except Exception:
+                    pass
+            btns.append(KeyboardButton(label, **kwargs))
         kb.append(btns)
     return ReplyKeyboardMarkup(kb, resize_keyboard=resize, one_time_keyboard=one_time)
 
