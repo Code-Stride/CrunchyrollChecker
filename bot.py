@@ -2639,9 +2639,8 @@ def main():
     import threading
     threading.Thread(target=_proxy_loop, daemon=True).start()
 
-    # Build with post_init to set WebApp menu inside event loop
     from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
-    app = Application.builder().token(BOT_TOKEN).concurrent_updates(True).post_init(_post_init_set_menu).build()
+    app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(MessageHandler(filters.COMMAND, cmd_any))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
