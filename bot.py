@@ -2262,6 +2262,92 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply_menu(msg, "🔘 Send <code>EMAIL:PASS</code> or use buttons 👇\n\n" + mtext, rows)
 
 
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    msg = update.effective_message
+    if not user or not msg or not msg.document:
+        return
+    uid = user.id
+    pending = get_pending(uid)
+
+    # Handle proxy file upload when in addpx state
+    if pending and pending.get("kind") == "addpx":
+        clear_pending(uid)
+        doc = msg.document
+        name = (doc.file_name or "unknown.txt").lower()
+        if doc.file_size and doc.file_size > MAX_FILE_MB * 1024 * 1024:
+            await reply_menu(msg, f"❌ File too large (max <code>{MAX_FILE_MB} MB</code>).",
+                             [[("📥 Try Again", "addpx", "primary"), ("⬅️ Menu", "menu", "danger")]])
+            return
+        note = await msg.reply_text("📥 Downloading proxy file...")
+        try:
+            tg_file = await context.bot.get_file(doc.file_id)
+            tmp_path = Path(tempfile.gettempdir()) / f"proxy_{uid}_{int(time.time())}.txt"
+            await tg_file.download_to_drive(str(tmp_path))
+            text = tmp_path.read_text(encoding="utf-8", errors="ignore")
+            tmp_path.unlink(missing_ok=True)
+        except Exception as e:
+            await note.edit_text(f"❌ Download failed: <code>{esc(str(e)[:120])}</code>", parse_mode=ParseMode.HTML)
+            return
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        if not lines:
+            await note.edit_text("❌ No proxies found in file.", parse_mode=ParseMode.HTML)
+            return
+        if len(lines) > MAX_PASTED_PROXIES:
+            await note.edit_text(f"❌ Too many lines (max {MAX_PASTED_PROXIES}).", parse_mode=ParseMode.HTML)
+            return
+        ac = bool(STORE.get_setting("auto_check", True))
+        await note.edit_text(f"🔍 Testing <code>{len(lines)}</code> proxies... (auto-check {'ON' if ac else 'OFF'})", parse_mode=ParseMode.HTML)
+        added, invalid = await asyncio.to_thread(add_proxies_to_pool, lines, ac)
+        status = "🔍 Auto-check started..." if ac else "Added (live check skipped)."
+        await note.edit_text(
+            f"📥 <b>Proxies Uploaded</b>\n\n✅ Added: <code>{added}</code> • ⚠️ Invalid: <code>{invalid}</code>\n"
+            f"📦 Pool: <code>{pool_size()}</code> • 🌐 Live: <code>{proxy_count()}</code>\n\n{status}",
+            parse_mode=ParseMode.HTML
+        )
+        await reply_menu(msg, f"✅ Proxies ready! Pool: <code>{pool_size()}</code> • Live: <code>{proxy_count()}</code>",
+                         [[("🧪 Test Proxies", "proxysettings", "success"), ("💎 Check Account", "check", "success")], [("⬅️ Menu", "menu", "danger")]])
+        return
+
+    if pending and pending["kind"] != "file":
+        await msg.reply_text(
+            "⏳ I'm waiting for a different input — press ⬅️ Back, or send the right thing."
+        )
+        return
+    if pending:
+        clear_pending(uid)
+    elif not _has_access(uid):
+        text, rows = menu_main(uid)
+        await reply_menu(msg, text, rows)
+        return
+
+    doc = msg.document
+    name = (doc.file_name or "unknown.txt").lower()
+    if not name.endswith((".txt", ".log", ".json", ".csv")):
+        await reply_menu(msg, "❌ Only <code>.txt / .log / .json / .csv</code> files allowed.",
+                         [[("📂 Try Again", "file", "primary"), ("⬅️ Menu", "menu", "danger")]])
+        return
+    if doc.file_size and doc.file_size > MAX_FILE_MB * 1024 * 1024:
+        await reply_menu(msg, f"❌ File too large (max <code>{MAX_FILE_MB} MB</code>).",
+                         [[("📂 Try Again", "file", "primary"), ("⬅️ Menu", "menu", "danger")]])
+        return
+
+    note = await msg.reply_text("📥 Downloading file...")
+    try:
+        tg_file = await context.bot.get_file(doc.file_id)
+        tmp_path = Path(tempfile.gettempdir()) / f"crunchy_{uid}_{int(time.time())}.txt"
+        await tg_file.download_to_drive(str(tmp_path))
+        text = tmp_path.read_text(encoding="utf-8", errors="ignore")
+        tmp_path.unlink(missing_ok=True)
+    except Exception as e:
+        await note.edit_text(f"❌ Download failed: <code>{esc(str(e)[:120])}</code>",
+                             parse_mode=ParseMode.HTML)
+        return
+    if not text.strip():
+        await note.edit_text("❌ File is empty.")
+        return
+    await _run_and_report(msg, uid, text)
+
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global THREADS
     q = update.callback_query
