@@ -163,16 +163,17 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 # Mini App config
 PORT = int(_env("PORT", "8000") or 8000)
 
-THREADS = max(1, int(_env("THREADS", "35")))
+THREADS = max(1, int(_env("THREADS", "120")))
 PROXY_REFRESH_MINUTES = max(1, int(_env("PROXY_REFRESH_MINUTES", "15")))
 MAX_PROXIES_TO_KEEP = max(1, int(_env("MAX_PROXIES_TO_KEEP", "80")))
-PROXY_TEST_TIMEOUT = int(_env("PROXY_TEST_TIMEOUT", "8"))
+PROXY_TEST_TIMEOUT = int(_env("PROXY_TEST_TIMEOUT", "6"))  # faster for 500-600 cpm
 PROXY_TEST_SAMPLE = int(_env("PROXY_TEST_SAMPLE", "250"))
 CHECK_TIMEOUT = int(_env("CHECK_TIMEOUT", "15"))
 MAX_FILE_MB = int(_env("MAX_FILE_MB", "20"))  # Telegram Bot API download limit
 PREMIUM_ONLY_DEFAULT = _env("PREMIUM_ONLY", "true").lower() in ("1", "true", "yes", "on")
 MAX_PASTED_CREDS = 2000
 MAX_PASTED_PROXIES = 5000
+MAX_THREADS_USER = 300  # max threads user can set (like RESIROX max 300)
 MAX_HIT_CARDS = 150  # per-hit detail cards per check (rest goes to the export file)
 
 START_TIME = time.time()
@@ -1052,7 +1053,7 @@ def extract_credentials(text: str) -> List[dict]:
     return creds
 
 # ===================== CHECKER ENGINE =====================
-def run_check(text: str, reporter=None) -> dict:
+def run_check(text: str, reporter=None, hit_callback=None) -> dict:
     """Thread-pool check of all credentials. Premium counters: hit/free/bad/rate/err/2fa + live feed + cpm."""
     ensure_proxies()
     creds = extract_credentials(text)
@@ -1115,7 +1116,14 @@ def run_check(text: str, reporter=None) -> dict:
                 except Exception:
                     pass
                 if st == "hit":
-                    results["hits"].append({"cred": orig_cred, "data": d, "st": "hit"})
+                    entry = {"cred": orig_cred, "data": d, "st": "hit"}
+                    results["hits"].append(entry)
+                    # Immediate hit delivery — don't wait for full scan
+                    if hit_callback:
+                        try:
+                            hit_callback(entry)
+                        except Exception:
+                            pass
                 elif st == "free":
                     results["free"].append({"cred": orig_cred, "data": d, "st": "free"})
                 elif st == "bad":
@@ -1965,10 +1973,10 @@ def menu_owner():
     )
     rows = [
         [("🔑 Generate Code", "genpick", "success")],
-        [("📥 Add Proxies", "addpx", "primary"),
-         (f"⚙️ Auto-Check: {'ON' if ac else 'OFF'}", "autocheck", "primary")],
-        [("🌐 Pool Status", "pool", "primary"), ("🧹 Clear Pool", "clearpool", "danger")],
-        [("📊 Status", "status", "primary"), ("📡 Refresh Proxies", "refresh", "primary")],
+        [("📥 Add Proxies", "addpx", "primary"), ("🧹 Clear Pool", "clearpool", "danger")],
+        [("🌐 Pool Status", "pool", "primary"), ("📡 Refresh Proxies", "refresh", "primary")],
+        [("⚙️ Auto-Check: {'ON' if ac else 'OFF'}", "autocheck", "primary"), ("🧵 Set Threads: {THREADS}", "setthreads", "primary")],
+        [("📊 Status", "status", "primary"), ("📈 Proxy Settings", "proxysettings", "primary")],
         [("🤖 Oxaam Fetch", "oxaam", "success"), ("📺 TV Activation", "tv", "success")],
         [("⬅️ Back", "menu", "danger")],
     ]
@@ -2059,8 +2067,19 @@ async def _run_and_report(msg, uid: int, text: str):
     note = await msg.reply_text(init_card, parse_mode=ParseMode.HTML)
     loop = asyncio.get_running_loop()
     reporter = ProgressReporter(note, loop)
+    # Immediate hit sender
+    sent_hits = []
+    def _hit_cb(entry):
+        try:
+            sent_hits.append(entry)
+            # Send hit card immediately without waiting
+            fut = asyncio.run_coroutine_threadsafe(send_hit_cards(msg, [entry], cap=1), loop)
+            # Don't wait, just fire
+        except Exception:
+            pass
+
     try:
-        results = await asyncio.to_thread(run_check, text, reporter)
+        results = await asyncio.to_thread(run_check, text, reporter, _hit_cb)
     except Exception as e:
         await note.edit_text(f"❌ <b>Check error</b>\n━━━━━━━━━━━━━━━━━━━━━\n<code>{esc(str(e)[:120])}</code>",
                              parse_mode=ParseMode.HTML)
@@ -2140,6 +2159,7 @@ async def cmd_any(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply_menu(msg, "🔘 This bot is 100% button-driven — pick an option below 👇\n\n" + text, rows)
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global THREADS
     user = update.effective_user
     msg = update.effective_message
     if not user or not msg or not msg.text:
@@ -2217,6 +2237,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 await msg.reply_text(f"❌ Error: <code>{esc(str(e)[:120])}</code>", parse_mode=ParseMode.HTML)
             return
+        elif reply_action == "setthreads":
+            try:
+                val = int(text.strip())
+                if 10 <= val <= 300:
+                    THREADS = val
+                    await msg.reply_text(f"✅ <b>Threads Set:</b> <code>{THREADS}</code>\nSpeed ~<code>{THREADS*4} cpm</code>", parse_mode=ParseMode.HTML, reply_markup=owner_reply_kb())
+                else:
+                    await msg.reply_text("❌ Threads must be 10-300", parse_mode=ParseMode.HTML)
+            except Exception:
+                await msg.reply_text("❌ Send a number 10-300", parse_mode=ParseMode.HTML)
+            return
+
         elif reply_action == "pool":
             ac = bool(STORE.get_setting("auto_check", True))
             text = f"🌐 <b>Proxy Pool</b>\n━━━━━━━━━━━━━━━━━━━━━\n📥 Pool (user-added): <code>{pool_size()}</code>\n🌐 Live in use: <code>{proxy_count()}</code>\n⚙️ Auto-Check: <code>{'ON' if ac else 'OFF'}</code>\n🔁 Auto Refresh: <code>{PROXY_REFRESH_MINUTES} min</code>"
@@ -2381,6 +2413,45 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = user.id
     pending = get_pending(uid)
 
+    # Handle proxy file upload when in addpx state
+    if pending and pending.get("kind") == "addpx":
+        clear_pending(uid)
+        doc = msg.document
+        name = (doc.file_name or "unknown.txt").lower()
+        if doc.file_size and doc.file_size > MAX_FILE_MB * 1024 * 1024:
+            await reply_menu(msg, f"❌ File too large (max <code>{MAX_FILE_MB} MB</code>).",
+                             [[("📥 Try Again", "addpx", "primary"), ("⬅️ Menu", "menu", "danger")]])
+            return
+        note = await msg.reply_text("📥 Downloading proxy file...")
+        try:
+            tg_file = await context.bot.get_file(doc.file_id)
+            tmp_path = Path(tempfile.gettempdir()) / f"proxy_{uid}_{int(time.time())}.txt"
+            await tg_file.download_to_drive(str(tmp_path))
+            text = tmp_path.read_text(encoding="utf-8", errors="ignore")
+            tmp_path.unlink(missing_ok=True)
+        except Exception as e:
+            await note.edit_text(f"❌ Download failed: <code>{esc(str(e)[:120])}</code>", parse_mode=ParseMode.HTML)
+            return
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        if not lines:
+            await note.edit_text("❌ No proxies found in file.", parse_mode=ParseMode.HTML)
+            return
+        if len(lines) > MAX_PASTED_PROXIES:
+            await note.edit_text(f"❌ Too many lines (max {MAX_PASTED_PROXIES}).", parse_mode=ParseMode.HTML)
+            return
+        ac = bool(STORE.get_setting("auto_check", True))
+        await note.edit_text(f"🔍 Testing <code>{len(lines)}</code> proxies... (auto-check {'ON' if ac else 'OFF'})", parse_mode=ParseMode.HTML)
+        added, invalid = await asyncio.to_thread(add_proxies_to_pool, lines, ac)
+        status = "🔍 Auto-check started..." if ac else "Added (live check skipped)."
+        await note.edit_text(
+            f"📥 <b>Proxies Uploaded</b>\n\n✅ Added: <code>{added}</code> • ⚠️ Invalid: <code>{invalid}</code>\n"
+            f"📦 Pool: <code>{pool_size()}</code> • 🌐 Live: <code>{proxy_count()}</code>\n\n{status}",
+            parse_mode=ParseMode.HTML
+        )
+        await reply_menu(msg, f"✅ Proxies ready! Pool: <code>{pool_size()}</code> • Live: <code>{proxy_count()}</code>",
+                         [[("🧪 Test Proxies", "proxysettings", "success"), ("💎 Check Account", "check", "success")], [("⬅️ Menu", "menu", "danger")]])
+        return
+
     if pending and pending["kind"] != "file":
         await msg.reply_text(
             "⏳ I'm waiting for a different input — press ⬅️ Back, or send the right thing."
@@ -2426,6 +2497,7 @@ _SVC_NAMES = {
 }
 
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global THREADS
     q = update.callback_query
     if not q or not q.message:
         return
@@ -2540,6 +2612,32 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await edit_menu(m, f"❌ Error: <code>{esc(str(e)[:120])}</code>",
                             [[("⬅️ Back", "opanel", "danger")]])
 
+    elif data == "proxysettings":
+        # Proxy Settings like RESIROX — Status ON, Loaded, Threads, Upload etc
+        ac = bool(STORE.get_setting("auto_check", True))
+        status = "🟢 ON" if proxy_count() > 0 else "🔴 OFF"
+        loaded = pool_size()
+        live = proxy_count()
+        text = (
+            "🔵 <b>Proxy Settings</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🟢 Status: <b>{status}</b>\n"
+            f"📦 Loaded: <code>{loaded}</code> • 🌐 Live: <code>{live}</code>\n"
+            f"🧵 Threads: <code>{THREADS}</code> (max 300)\n"
+            f"⚙️ Auto-Check: <code>{'ON' if ac else 'OFF'}</code>\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            "📤 Upload proxies — any provider. Live check\n"
+            "in chat. <i>Txt form always</i>\n"
+            "Format: <code>user:pass@ip:port</code> or <code>ip:port</code>\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            "Manage proxies with the buttons below"
+        )
+        await edit_menu(m, text,
+                        [[("🔵 Disable Proxies", "disableproxies", "primary"), ("📤 Upload Proxies", "addpx", "success")],
+                         [("🧵 Set Threads", "setthreads", "primary"), ("🧹 Clear Proxies", "clearpool", "danger")],
+                         [("⬅️ Back", "opanel", "danger")]])
+        return
+
     elif data == "pool":
         ac = bool(STORE.get_setting("auto_check", True))
         text = (
@@ -2565,10 +2663,25 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Max " + str(MAX_PASTED_PROXIES) + " lines.",
             [[("⬅️ Back", "opanel", "danger")]])
 
+    elif data == "disableproxies":
+        # Disable proxies — clear live but keep pool
+        with PROXY_LOCK:
+            LIVE_PROXIES.clear()
+        await edit_menu(m, "🔵 <b>Proxies Disabled</b>\n\n🌐 Live: <code>0</code> • Pool kept.", [[("📤 Upload Proxies", "addpx", "success"), ("⬅️ Back", "proxysettings", "danger")]])
+        return
+
     elif data == "clearpool":
         await asyncio.to_thread(clear_pool)
         text, rows = menu_owner()
         await edit_menu(m, "🧹 <b>Pool cleared.</b> Live list reset too.\n\n" + text, rows)
+
+    elif data == "setthreads":
+        # Set Threads like RESIROX — 50/100/200/300
+        await edit_menu(m, f"🧵 <b>Set Threads</b>\n\nCurrent: <code>{THREADS}</code> • Max 300\n\nChoose threads (higher = faster but more proxy load):",
+                        [[("🧵 50", "threads_50", "primary"), ("🧵 100", "threads_100", "success")],
+                         [("🧵 200", "threads_200", "primary"), ("🧵 300", "threads_300", "success")],
+                         [("⬅️ Back", "proxysettings", "danger")]])
+        return
 
     elif data == "autocheck":
         new = not bool(STORE.get_setting("auto_check", True))
@@ -2579,6 +2692,19 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"⚙️ <b>Auto-Check Proxies: {'ON' if new else 'OFF'}</b>\n\n"
             f"{extra}Added proxies are saved to disk and survive restarts.",
             [[("⬅️ Back", "opanel", "danger")]])
+
+    elif data.startswith("threads_"):
+        try:
+            val = int(data.split("_")[1])
+            if 10 <= val <= 300:
+                THREADS = val
+                await edit_menu(m, f"✅ <b>Threads Set</b>\n\n🧵 Now: <code>{THREADS}</code> • Speed ~<code>{THREADS*4} cpm</code> est.\n\nAccuracy maintained. Enjoy 500-600 cpm with good proxies!",
+                                [[("🔵 Proxy Settings", "proxysettings", "primary"), ("⬅️ Back", "menu", "danger")]])
+                return
+        except Exception:
+            pass
+        await edit_menu(m, "❌ Invalid threads value.", [[("⬅️ Back", "proxysettings", "danger")]])
+        return
 
     elif data == "oxaam":
         await edit_menu(m, "🤖 <b>Oxaam Fetch</b>\n⏳ Pulling a fresh account...", None)
