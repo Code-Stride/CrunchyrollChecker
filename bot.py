@@ -620,19 +620,27 @@ def check_account_app(user: str, pw: str, proxy: Optional[dict] = None):
     return "hit", d
 
 def check_account_app_retry(user: str, pw: str, proxy: Optional[dict] = None, tries: int = 1):
-    """Smart retry: one proxy per account, use once then discard (fek do)."""
+    """Smart retry: auto proxies discard after use, manual high-level reuse."""
     st, d = check_account_app(user, pw, proxy)
     if st == "rate":
-        # Retry with a fresh proxy from auto-loaded pool, also discard after use
         try:
             new_proxy = None
             with PROXY_LOCK:
                 if LIVE_PROXIES:
-                    try:
-                        idx = random.randrange(len(LIVE_PROXIES))
-                        new_proxy = LIVE_PROXIES.pop(idx)
-                    except Exception:
-                        new_proxy = LIVE_PROXIES.pop(0) if LIVE_PROXIES else None
+                    auto_indices = [i for i, p in enumerate(LIVE_PROXIES) if p.get("https") not in MANUAL_PROXY_URLS]
+                    if auto_indices:
+                        try:
+                            idx = random.choice(auto_indices)
+                            new_proxy = LIVE_PROXIES.pop(idx)
+                            AUTO_PROXY_URLS.discard(new_proxy.get("https",""))
+                        except Exception:
+                            pass
+                    else:
+                        # only manual left -> reuse without discard
+                        try:
+                            new_proxy = random.choice(LIVE_PROXIES) if LIVE_PROXIES else None
+                        except Exception:
+                            new_proxy = None
             if new_proxy and new_proxy != proxy:
                 time.sleep(0.5)
                 st2, d2 = check_account_app(user, pw, new_proxy)
@@ -865,6 +873,9 @@ PROXY_TEST_URLS = [
 ]
 
 LIVE_PROXIES: List[dict] = []
+MANUAL_PROXY_URLS: set = set()  # high-level manual proxies (user loaded) - NEVER discard, reuse
+AUTO_PROXY_URLS: set = set()  # auto-loaded proxies - discard after one use (fek do)
+MANUAL_PX_IDX = [0]  # round-robin index for manual reuse
 PROXY_SCORES: dict = {}  # proxy url -> success count for smart ranking
 REFRESH_STATE: dict = {"tested": 0, "live": 0, "total": 0, "start": 0}
 PROXY_LOCK = threading.Lock()
@@ -892,18 +903,28 @@ def get_random_proxy() -> Optional[dict]:
         return random.choice(LIVE_PROXIES)
 
 def pop_random_proxy() -> Optional[dict]:
-    """One-time use proxy: pop from LIVE_PROXIES and discard after use (fek do)."""
+    """One-time use proxy: ONLY auto-loaded proxies are popped & discarded (fek do). Manual high-level proxies are preserved."""
     with PROXY_LOCK:
         if not LIVE_PROXIES:
             return None
-        try:
-            idx = random.randrange(len(LIVE_PROXIES))
-            return LIVE_PROXIES.pop(idx)
-        except Exception:
+        # Prefer auto proxies (discard)
+        auto_indices = [i for i, p in enumerate(LIVE_PROXIES) if p.get("https") not in MANUAL_PROXY_URLS]
+        if auto_indices:
             try:
-                return LIVE_PROXIES.pop(0) if LIVE_PROXIES else None
+                idx = random.choice(auto_indices)
+                proxy = LIVE_PROXIES.pop(idx)
+                AUTO_PROXY_URLS.discard(proxy.get("https", ""))
+                return proxy
             except Exception:
-                return None
+                pass
+        # No auto left -> return manual without discarding (reuse)
+        try:
+            return random.choice(LIVE_PROXIES) if LIVE_PROXIES else None
+        except Exception:
+            return None
+
+def is_manual_proxy_url(url: str) -> bool:
+    return url in MANUAL_PROXY_URLS
 
 def harvest_proxies() -> List[str]:
     raw = set()
@@ -1024,9 +1045,17 @@ def refresh_live_proxies(force: bool = False) -> None:
             live = fallback
             logger.warning("No live after test — using fallback untested %d", len(live))
         with PROXY_LOCK:
-            LIVE_PROXIES = live
+            # Preserve manual high-level proxies (never discard), replace only auto portion
+            manual_keep = [p for p in LIVE_PROXIES if p.get("https") in MANUAL_PROXY_URLS]
+            LIVE_PROXIES = manual_keep + live
             LAST_PROXY_HARVEST = now
-        logger.info("Live proxies ready: %d (tested %d from %d candidates)", len(live), len(to_test) if 'to_test' in locals() else 0, len(candidates) if 'candidates' in locals() else 0)
+            # Update AUTO set: only auto proxies
+            AUTO_PROXY_URLS.clear()
+            for p in live:
+                url = p.get("https") or ""
+                if url and url not in MANUAL_PROXY_URLS:
+                    AUTO_PROXY_URLS.add(url)
+        logger.info("Live proxies ready: %d auto + %d manual = %d total (tested %d from %d candidates)", len(live), len(manual_keep) if 'manual_keep' in locals() else 0, len(LIVE_PROXIES), len(to_test) if 'to_test' in locals() else 0, len(candidates) if 'candidates' in locals() else 0)
     finally:
         _refresh_busy.release()
 
@@ -1090,21 +1119,34 @@ def normalize_proxy(line: str) -> Optional[str]:
         return f"http://{parts[0]}:{parts[1]}"
     return None
 
-def _merge_live(items: List[dict]):
+def _merge_live(items: List[dict], is_manual: bool = False):
     with PROXY_LOCK:
         have = {p.get("https") for p in LIVE_PROXIES}
         for p in items:
-            if p.get("https") not in have:
+            url = p.get("https") or p.get("http") or ""
+            if url not in have:
                 LIVE_PROXIES.append(p)
-                have.add(p.get("https"))
+                have.add(url)
+                if is_manual:
+                    MANUAL_PROXY_URLS.add(url)
+                    AUTO_PROXY_URLS.discard(url)
+                else:
+                    # auto proxy
+                    if url not in MANUAL_PROXY_URLS:
+                        AUTO_PROXY_URLS.add(url)
 
 def _load_pool_into_live():
     items = pool_load()
     if items:
-        _merge_live([{"http": p, "https": p} for p in items])
+        # Populate manual set from file first
+        with PROXY_LOCK:
+            for u in items:
+                MANUAL_PROXY_URLS.add(u)
+                AUTO_PROXY_URLS.discard(u)
+        _merge_live([{"http": p, "https": p} for p in items], is_manual=True)
 
 def add_proxies_to_pool(lines: List[str], auto_check: bool = True):
-    """Add user-pasted proxies. Returns (added, invalid)."""
+    """Add user-pasted proxies (high-level, never discard). Returns (added, invalid)."""
     existing = pool_load()
     have = set(existing)
     added = invalid = 0
@@ -1119,19 +1161,22 @@ def add_proxies_to_pool(lines: List[str], auto_check: bool = True):
         existing.append(p)
         have.add(p)
         added += 1
+        # Track as manual high-level immediately
+        with PROXY_LOCK:
+            MANUAL_PROXY_URLS.add(p)
+            AUTO_PROXY_URLS.discard(p)
     pool_save(existing)
     if added:
         if auto_check:
             threading.Thread(target=_background_test_pool, daemon=True).start()
         else:
-            _merge_live([{"http": p, "https": p} for p in existing])
+            _merge_live([{"http": p, "https": p} for p in existing], is_manual=True)
     return added, invalid
 
 def _background_test_pool():
-    """Auto-check: background-test pool, keep live — with progress and fallback."""
+    """Auto-check: background-test pool (manual high-level, never discard), keep live."""
     pool_urls = list(set(pool_load()))
     tested = []
-    # Test in parallel for speed
     from concurrent.futures import ThreadPoolExecutor, as_completed
     with ThreadPoolExecutor(max_workers=30) as ex:
         futs = {ex.submit(test_proxy_url, p): p for p in pool_urls}
@@ -1143,22 +1188,27 @@ def _background_test_pool():
             except Exception:
                 continue
     with PROXY_LOCK:
-        # Remove old pool entries
+        # Remove old pool entries (manual)
         LIVE_PROXIES[:] = [x for x in LIVE_PROXIES if x.get("https") not in set(pool_urls)]
-        _merge_live(tested)
-    # Also ensure at least some pool proxies are kept as fallback if all fail but pool has many
+        # Ensure manual set contains these
+        for u in pool_urls:
+            MANUAL_PROXY_URLS.add(u)
+            AUTO_PROXY_URLS.discard(u)
+    _merge_live(tested, is_manual=True)
     if not tested and pool_urls:
-        # Keep 10 untested as fallback so user sees live increase (fake detection will happen during check)
         fallback = [{"http": p, "https": p} for p in pool_urls[:10]]
-        _merge_live(fallback)
-        logger.warning("Pool test 0 live — keeping 10 fallback untested for user")
-    logger.info("Pool auto-check done: %d live from %d pool", len(tested), len(pool_urls))
+        _merge_live(fallback, is_manual=True)
+        logger.warning("Pool test 0 live — keeping 10 fallback untested for user (manual high-level)")
+    logger.info("Pool auto-check done: %d live from %d pool (manual preserved)", len(tested), len(pool_urls))
 
 def clear_pool():
     global LAST_PROXY_HARVEST
     pool_save([])
     with PROXY_LOCK:
         LIVE_PROXIES.clear()
+        MANUAL_PROXY_URLS.clear()
+        AUTO_PROXY_URLS.clear()
+        MANUAL_PX_IDX[0] = 0
         LAST_PROXY_HARVEST = time.time()  # don't let the loop refill immediately
 
 # ===================== CREDENTIAL EXTRACTION =====================
@@ -1245,20 +1295,45 @@ def run_check(text: str, reporter=None, hit_callback=None, uid: int = None) -> d
     lock = threading.Lock()
 
     def next_proxy() -> Optional[dict]:
-        """One account = one proxy from auto-loaded pool, use once then discard (fek do)."""
+        """One account = one proxy: auto-loaded -> use once then discard (fek do), manual high-level -> reuse never discard."""
         with PROXY_LOCK:
             if not LIVE_PROXIES:
                 return None
-            try:
-                # Random pop for better distribution, discard after use
-                idx = random.randrange(len(LIVE_PROXIES))
-                p = LIVE_PROXIES.pop(idx)
-            except Exception:
+            # Find auto proxies (those not in manual set) - these go to dustbin after use
+            auto_indices = [i for i, p in enumerate(LIVE_PROXIES) if p.get("https") not in MANUAL_PROXY_URLS]
+            if auto_indices:
                 try:
-                    p = LIVE_PROXIES.pop(0) if LIVE_PROXIES else None
+                    idx = random.choice(auto_indices)
+                    proxy = LIVE_PROXIES.pop(idx)
+                    AUTO_PROXY_URLS.discard(proxy.get("https", ""))
+                    # logger.info("Auto proxy discarded after use: %s", proxy.get("https","")[:40])
+                    return proxy
                 except Exception:
-                    p = None
-            return p
+                    try:
+                        # fallback pop first auto
+                        for i in list(auto_indices):
+                            try:
+                                proxy = LIVE_PROXIES.pop(i)
+                                AUTO_PROXY_URLS.discard(proxy.get("https",""))
+                                return proxy
+                            except Exception:
+                                continue
+                    except Exception:
+                        pass
+            # No auto left -> use manual high-level proxies with round-robin reuse (never discard)
+            if LIVE_PROXIES:
+                try:
+                    with lock:
+                        # round-robin for manual
+                        m_idx = MANUAL_PX_IDX[0] % len(LIVE_PROXIES)
+                        MANUAL_PX_IDX[0] += 1
+                        return LIVE_PROXIES[m_idx]
+                except Exception:
+                    try:
+                        return random.choice(LIVE_PROXIES)
+                    except Exception:
+                        return None
+            return None
 
     def worker(cred: dict):
         proxy = next_proxy()
@@ -2995,7 +3070,10 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             with PROXY_LOCK:
                 LIVE_PROXIES.clear()
-            await edit_menu(m, "🔵 <b>Proxies Disabled</b>\n🌐 Live: <code>0</code> • Pool kept.", [[("📤 Upload Proxies", "addpx", "success"), ("⬅️ Back", "proxysettings", "danger")]])
+                AUTO_PROXY_URLS.clear()
+                MANUAL_PROXY_URLS.clear()
+                MANUAL_PX_IDX[0] = 0
+            await edit_menu(m, "🔵 <b>Proxies Disabled</b>\n🌐 Live: <code>0</code> • Pool file kept (manual can be reloaded).", [[("📤 Upload Proxies", "addpx", "success"), ("⬅️ Back", "proxysettings", "danger")]])
             return
         elif data == "clearpool":
             if not is_admin(uid, uname_btn):
