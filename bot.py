@@ -163,7 +163,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 # Mini App config
 PORT = int(_env("PORT", "8000") or 8000)
 
-THREADS = max(1, int(_env("THREADS", "120")))
+THREADS = max(120, int(_env("THREADS", "120")))  # hard min 120 for 500-600 cpm (user wants 300 max)
 PROXY_REFRESH_MINUTES = max(1, int(_env("PROXY_REFRESH_MINUTES", "15")))
 MAX_PROXIES_TO_KEEP = max(1, int(_env("MAX_PROXIES_TO_KEEP", "80")))
 PROXY_TEST_TIMEOUT = int(_env("PROXY_TEST_TIMEOUT", "6"))  # faster for 500-600 cpm
