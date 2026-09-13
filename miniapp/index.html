@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>BlazeNXT — CRUNCHYROLL CHECKER</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+  <!-- Header -->
+  <header class="header">
+    <div class="header-left">
+      <div class="logo"><i data-lucide="flame" class="icon-logo"></i></div>
+      <div>
+        <div class="brand">BlazeNXT</div>
+        <div class="sub">CRUNCHYROLL CHECKER • PREMIUM</div>
+      </div>
+    </div>
+    <div class="header-right">
+      <div class="pill" id="proxyPill"><i data-lucide="globe" class="icon-sm"></i> <span>0 live</span></div>
+      <div class="pill" id="uptimePill"><i data-lucide="clock" class="icon-sm"></i> <span>0m</span></div>
+    </div>
+  </header>
+
+  <!-- Tabs -->
+  <nav class="tabs">
+    <button class="tab active" data-tab="checker"><i data-lucide="badge-check" class="icon-sm"></i> Checker</button>
+    <button class="tab" data-tab="proxies"><i data-lucide="globe" class="icon-sm"></i> Proxies</button>
+    <button class="tab" data-tab="generate"><i data-lucide="key-round" class="icon-sm"></i> Codes</button>
+    <button class="tab" data-tab="status"><i data-lucide="activity" class="icon-sm"></i> Status</button>
+  </nav>
+
+  <!-- Checker Tab -->
+  <section id="checker" class="panel active">
+    <div class="card">
+      <div class="card-title"><i data-lucide="file-text" class="icon-sm"></i> Paste Combos</div>
+      <div class="card-desc">One per line • <code>EMAIL:PASS</code> • Supports .txt/.csv/.json file</div>
+      <textarea id="comboInput" placeholder="hituser@gmail.com:pass123
+freeuser@gmail.com:pass456
+baduser@gmail.com:badpass"></textarea>
+      <div class="row">
+        <label class="file-btn"><i data-lucide="folder-open" class="icon-sm"></i> Choose File
+          <input type="file" id="fileInput" accept=".txt,.csv,.json,.log" hidden>
+        </label>
+        <span id="fileName" class="muted">No file chosen</span>
+        <span class="spacer"></span>
+        <label class="check"><input type="checkbox" id="premiumOnly" checked> Premium only</label>
+      </div>
+      <div class="row">
+        <button id="startBtn" class="btn primary"><i data-lucide="rocket" class="icon-sm"></i> Start Check</button>
+        <button id="clearBtn" class="btn ghost"><i data-lucide="trash-2" class="icon-sm"></i> Clear</button>
+        <span id="comboCount" class="muted">0 combos</span>
+      </div>
+    </div>
+
+    <!-- Progress Card -->
+    <div id="progressCard" class="card progress-card hidden">
+      <div class="progress-header"><i data-lucide="trending-up" class="icon-sm"></i> CRUNCHYROLL Scan — Live</div>
+      <div class="bar-wrap"><div id="barFill" class="bar-fill" style="width:0%"></div></div>
+      <div class="progress-top">
+        <span id="pctText">0%</span>
+        <span id="checkedText">0/0</span>
+        <span id="cpmText">0 cpm</span>
+      </div>
+      <div class="stats-grid">
+        <div class="stat"><span><i data-lucide="star" class="icon-xs"></i> Hits</span><b id="hitsText">0</b></div>
+        <div class="stat"><span><i data-lucide="gem" class="icon-xs"></i> Free</span><b id="freeText">0</b></div>
+        <div class="stat"><span><i data-lucide="shield-check" class="icon-xs"></i> 2FA</span><b id="2faText">0</b></div>
+        <div class="stat"><span><i data-lucide="x-circle" class="icon-xs"></i> Bad</span><b id="badText">0</b></div>
+        <div class="stat"><span><i data-lucide="alert-triangle" class="icon-xs"></i> Errors</span><b id="errText">0</b></div>
+        <div class="stat"><span><i data-lucide="timer" class="icon-xs"></i> Rate</span><b id="rateText">0</b></div>
+      </div>
+      <div class="progress-meta">
+        <span><i data-lucide="clock" class="icon-xs"></i> <b id="elapsedText">0m 0s</b></span>
+        <span><i data-lucide="hourglass" class="icon-xs"></i> ETA <b id="etaText">—</b></span>
+        <span><i data-lucide="globe" class="icon-xs"></i> <b id="proxiesText">0</b> live</span>
+        <span><i data-lucide="check-circle" class="icon-xs"></i> <b id="ratePctText">0%</b> succ</span>
+      </div>
+      <div class="live-feed">
+        <div class="live-title"><i data-lucide="radio" class="icon-xs"></i> Live feed:</div>
+        <div id="liveFeed" class="live-list"><i>—</i></div>
+      </div>
+    </div>
+
+    <!-- Results -->
+    <div id="resultsCard" class="card hidden">
+      <div class="results-header">
+        <span id="resultsTitle"><i data-lucide="check-circle" class="icon-sm"></i> Results</span>
+        <div class="export-btns">
+          <button id="exportTxt" class="btn small"><i data-lucide="file-text" class="icon-xs"></i> TXT</button>
+          <button id="exportJson" class="btn small"><i data-lucide="file-json" class="icon-xs"></i> JSON</button>
+          <button id="exportCsv" class="btn small"><i data-lucide="table" class="icon-xs"></i> CSV</button>
+        </div>
+      </div>
+      <div id="resultsMeta" class="muted"></div>
+      <div id="hitList" class="hit-list"></div>
+    </div>
+  </section>
+
+  <!-- Proxies Tab -->
+  <section id="proxies" class="panel">
+    <div class="card">
+      <div class="card-title"><i data-lucide="globe" class="icon-sm"></i> Proxy Pool — BlazeNXT</div>
+      <div class="stats-grid">
+        <div class="stat"><span>Pool</span><b id="poolCount">0</b></div>
+        <div class="stat"><span>Live</span><b id="liveCount">0</b></div>
+        <div class="stat"><span>Auto-Check</span><b id="autoCheck">ON</b></div>
+      </div>
+      <textarea id="proxyInput" placeholder="host:port&#10;user:pass:host:port&#10;http://host:port"></textarea>
+      <div class="row">
+        <button id="addProxyBtn" class="btn primary"><i data-lucide="plus" class="icon-sm"></i> Add Proxies</button>
+        <button id="clearProxyBtn" class="btn danger"><i data-lucide="trash-2" class="icon-sm"></i> Clear Pool</button>
+        <button id="refreshProxyBtn" class="btn ghost"><i data-lucide="refresh-cw" class="icon-sm"></i> Refresh</button>
+      </div>
+      <div id="proxyMsg" class="muted"></div>
+    </div>
+  </section>
+
+  <!-- Generate Tab -->
+  <section id="generate" class="panel">
+    <div class="card">
+      <div class="card-title"><i data-lucide="key-round" class="icon-sm"></i> Generate Access Code — Owner Only</div>
+      <div class="row">
+        <button class="btn success" data-hours="24"><i data-lucide="clock" class="icon-sm"></i> 24h</button>
+        <button class="btn success" data-hours="48"><i data-lucide="clock" class="icon-sm"></i> 48h</button>
+        <button class="btn success" data-hours="72"><i data-lucide="clock" class="icon-sm"></i> 72h</button>
+      </div>
+      <div id="codeOut" class="code-out hidden">
+        <div class="code">—</div>
+        <div class="muted">Valid until —</div>
+      </div>
+      <div class="muted" style="margin-top:12px">Requires owner ID. Uses same Store as bot.</div>
+    </div>
+  </section>
+
+  <!-- Status Tab -->
+  <section id="status" class="panel">
+    <div class="card">
+      <div class="card-title"><i data-lucide="bar-chart-3" class="icon-sm"></i> BlazeNXT — Bot Status</div>
+      <div id="statusBox" class="status-box">Loading...</div>
+      <button id="refreshStatus" class="btn primary" style="margin-top:12px"><i data-lucide="refresh-cw" class="icon-sm"></i> Refresh</button>
+    </div>
+    <div class="card">
+      <div class="card-title"><i data-lucide="info" class="icon-sm"></i> About</div>
+      <div class="muted">
+        <b>BlazeNXT</b> — Crunchyroll Checker Premium<br>
+        App-API (Android TV) flow • Bot API 9.4 colored ReplyKeyboard • Hybrid UI<br>
+        Mini App hosted on same Railway service (PORT) • Telegram WebApp SDK • Lucide SVG
+      </div>
+    </div>
+  </section>
+
+  <footer class="footer"><i data-lucide="flame" class="icon-sm"></i> BlazeNXT • Telegram Mini App • v10</footer>
+</div>
+
+<script src="app.js"></script>
+<script>document.addEventListener('DOMContentLoaded',()=>{ if(window.lucide) lucide.createIcons(); });</script>
+</body>
+</html>
