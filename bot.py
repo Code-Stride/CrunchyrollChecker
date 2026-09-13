@@ -2280,7 +2280,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = user.id
     name = getattr(user, "first_name", None) or getattr(user, "username", None) or str(uid)
     if not is_admin(uid, getattr(user, "username", None)):
-        await reply_menu(msg, f"❌ <b>Access Denied</b>\n\nThis bot is <b>Owner + Admins only</b>.\nContact owner: <a href=\"https://t.me/blaze_nxt\">@blaze_nxt</a>", [[("💬 Contact Owner", "https://t.me/blaze_nxt", "primary")]])
+        owner_contact = f"<a href=\"https://t.me/{OWNER_USERNAME.lstrip('@')}\">{OWNER_USERNAME}</a> (<code>{OWNER_ID}</code>)" if OWNER_USERNAME and OWNER_USERNAME != "@unknown" and OWNER_USERNAME.lstrip("@") else f"<code>{OWNER_ID}</code>"
+        owner_url = f"https://t.me/{OWNER_USERNAME.lstrip('@')}" if OWNER_USERNAME and OWNER_USERNAME != "@unknown" and OWNER_USERNAME.lstrip("@") else f"tg://user?id={OWNER_ID}"
+        await reply_menu(msg, f"❌ <b>Access Denied</b>\n\nThis bot is <b>Owner + Admins only</b>.\nContact owner: {owner_contact}", [[("💬 Contact Owner", owner_url, "primary")]])
         return
     # Single path — no double message, board completely removed
     try:
@@ -2416,7 +2418,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = user.id
     text = msg.text.strip()
     if not is_admin(uid, getattr(user, "username", None)):
-        await reply_menu(msg, f"❌ <b>Access Denied</b>\nOwner/Admins only.\nContact: <a href=\"https://t.me/blaze_nxt\">@blaze_nxt</a>", [[("💬 Contact Owner", "https://t.me/blaze_nxt", "primary")]])
+        owner_contact2 = f"<a href=\"https://t.me/{OWNER_USERNAME.lstrip('@')}\">{OWNER_USERNAME}</a> (<code>{OWNER_ID}</code>)" if OWNER_USERNAME and OWNER_USERNAME != "@unknown" and OWNER_USERNAME.lstrip("@") else f"<code>{OWNER_ID}</code>"
+        owner_url2 = f"https://t.me/{OWNER_USERNAME.lstrip('@')}" if OWNER_USERNAME and OWNER_USERNAME != "@unknown" and OWNER_USERNAME.lstrip("@") else f"tg://user?id={OWNER_ID}"
+        await reply_menu(msg, f"❌ <b>Access Denied</b>\nOwner/Admins only.\nContact: {owner_contact2}", [[("💬 Contact Owner", owner_url2, "primary")]])
         return
     # Compat: if user still has old reply board cached, map its text to inline actions (single message)
     _compat_map = {
@@ -2565,7 +2569,9 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     uid = user.id
     if not is_admin(uid, getattr(user, "username", None)):
-        await reply_menu(msg, f"❌ <b>Access Denied</b>\nOwner/Admins only.\nContact: <a href=\"https://t.me/blaze_nxt\">@blaze_nxt</a>", [[("💬 Contact Owner", "https://t.me/blaze_nxt", "primary")]])
+        owner_contact2 = f"<a href=\"https://t.me/{OWNER_USERNAME.lstrip('@')}\">{OWNER_USERNAME}</a> (<code>{OWNER_ID}</code>)" if OWNER_USERNAME and OWNER_USERNAME != "@unknown" and OWNER_USERNAME.lstrip("@") else f"<code>{OWNER_ID}</code>"
+        owner_url2 = f"https://t.me/{OWNER_USERNAME.lstrip('@')}" if OWNER_USERNAME and OWNER_USERNAME != "@unknown" and OWNER_USERNAME.lstrip("@") else f"tg://user?id={OWNER_ID}"
+        await reply_menu(msg, f"❌ <b>Access Denied</b>\nOwner/Admins only.\nContact: {owner_contact2}", [[("💬 Contact Owner", owner_url2, "primary")]])
         return
     pending = get_pending(uid)
 
@@ -2703,7 +2709,9 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     elif data == "proxysettings":
         if not is_admin(uid, getattr(user, "username", None)):
-            await edit_menu(m, f"❌ <b>Access Denied</b>\nOwner/Admins only.\nContact: <a href=\"https://t.me/blaze_nxt\">@blaze_nxt</a>", [[("💬 Contact Owner", "https://t.me/blaze_nxt", "primary")]])
+            owner_contact3 = f"<a href=\"https://t.me/{OWNER_USERNAME.lstrip('@')}\">{OWNER_USERNAME}</a> (<code>{OWNER_ID}</code>)" if OWNER_USERNAME and OWNER_USERNAME != "@unknown" and OWNER_USERNAME.lstrip("@") else f"<code>{OWNER_ID}</code>"
+            owner_url3 = f"https://t.me/{OWNER_USERNAME.lstrip('@')}" if OWNER_USERNAME and OWNER_USERNAME != "@unknown" and OWNER_USERNAME.lstrip("@") else f"tg://user?id={OWNER_ID}"
+            await edit_menu(m, f"❌ <b>Access Denied</b>\nOwner/Admins only.\nContact: {owner_contact3}", [[("💬 Contact Owner", owner_url3, "primary")]])
             return
         text, rows = menu_owner()
         await edit_menu(m, text, rows)
