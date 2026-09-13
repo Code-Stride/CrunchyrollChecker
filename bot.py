@@ -1500,20 +1500,30 @@ def run_check(text: str, reporter=None, hit_callback=None, uid: int = None) -> d
         return None
 
     def worker(cred: dict):
+        # FIX: Pause/Stop instant - check before each attempt
         if uid is not None:
+            if STOP_REQUEST.get(uid):
+                return cred, "stopped", _blank_data("")
             while PAUSE_REQUEST.get(uid):
-                time.sleep(0.5)
+                time.sleep(0.3)
                 if STOP_REQUEST.get(uid):
                     return cred, "stopped", _blank_data("")
         for attempt in range(3):
+            if uid is not None and STOP_REQUEST.get(uid):
+                return cred, "stopped", _blank_data("")
             proxy = next_proxy()
             try:
                 r = check_credential(cred, proxy)
+                # Check stop immediately after check
+                if uid is not None and STOP_REQUEST.get(uid):
+                    return cred, "stopped", _blank_data("")
                 if r["st"] == "rate" and attempt < 2:
                     time.sleep(0.1)
                     continue
                 return cred, r["st"], r["data"]
             except Exception as e:
+                if uid is not None and STOP_REQUEST.get(uid):
+                    return cred, "stopped", _blank_data("")
                 if attempt < 2:
                     time.sleep(0.1)
                     continue
@@ -1541,13 +1551,19 @@ def run_check(text: str, reporter=None, hit_callback=None, uid: int = None) -> d
                 try:
                     if STOP_REQUEST.get(uid):
                         results["stopped"] = True
-                        for f in list(futures.keys()):
+                        # Cancel all pending futures immediately
+                        for f in futures:
                             try:
                                 f.cancel()
-                            except Exception:
+                            except:
                                 pass
+                        # Shutdown executor
+                        try:
+                            ex.shutdown(wait=False, cancel_futures=True)
+                        except:
+                            pass
                         break
-                except Exception:
+                except:
                     pass
             cred = futures[fut]
             try:
@@ -2866,21 +2882,16 @@ async def cmd_any(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await reply_menu(msg, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
                 return
             with USER_LOCK:
-                if USER_LAST_CHECK.get(f"busy_{uid}"):
-                    PAUSE_REQUEST[uid] = True
-                    await reply_menu(msg, "⏸️ <b>Pausing...</b>\n<i>Check will pause after current batch</i>", [[("▶️ Resume", "resumecheck", "success"), ("🛑 Stop", "stopcheck", "danger")]])
-                else:
-                    await reply_menu(msg, "ℹ️ No active check to pause.", [[("⬅️ Back", "menu", "danger")]])
+                PAUSE_REQUEST[uid] = True
+            await reply_menu(msg, "⏸️ Pausing... Will pause after current batch", [[("▶️ Resume", "resumecheck", "success"), ("🛑 Stop", "stopcheck", "danger")]])
             return
         if txt_lower in ("/resume", "/resumecheck"):
             if not is_admin(uid, getattr(user, "username", None)):
                 await reply_menu(msg, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
                 return
-            if PAUSE_REQUEST.get(uid):
+            with USER_LOCK:
                 PAUSE_REQUEST.pop(uid, None)
-                await reply_menu(msg, "▶️ <b>Resumed</b> — check continuing...", [[("🛑 Stop", "stopcheck", "danger")]])
-            else:
-                await reply_menu(msg, "ℹ️ No paused check.", [[("⬅️ Back", "menu", "danger")]])
+            await reply_menu(msg, "▶️ Resumed — continuing...", [[("🛑 Stop", "stopcheck", "danger"), ("⏸️ Pause", "pausecheck", "primary")]])
             return
         if txt_lower in ("/proxy", "/proxies", "/proxyinfo", "/pool"):
             if not is_admin(user.id, getattr(user, "username", None)):
@@ -3555,21 +3566,24 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not is_admin(uid, uname_btn):
                 return
             with USER_LOCK:
-                if USER_LAST_CHECK.get(f"busy_{uid}"):
-                    PAUSE_REQUEST[uid] = True
-                    await edit_menu(m, "⏸️ <b>Pausing...</b>\n<i>Check will pause after current batch</i>\n\n▶️ Resume or 🛑 Stop", [[("▶️ Resume", "resumecheck", "success"), ("🛑 Stop", "stopcheck", "danger")]])
-                else:
-                    await edit_menu(m, "ℹ️ No active check to pause.", [[("⬅️ Back", "menu", "danger")]])
+                PAUSE_REQUEST[uid] = True
+            try:
+                await q.answer("⏸️ Pausing...", show_alert=False)
+            except:
+                pass
+            await edit_menu(m, "⏸️ <b>Pausing...</b>\nCheck will pause after current batch\n\nResume or Stop", [[("▶️ Resume", "resumecheck", "success"), ("🛑 Stop", "stopcheck", "danger")]])
             return
 
         if data == "resumecheck":
             if not is_admin(uid, uname_btn):
                 return
-            if PAUSE_REQUEST.get(uid):
+            with USER_LOCK:
                 PAUSE_REQUEST.pop(uid, None)
-                await edit_menu(m, "▶️ <b>Resumed</b> — check continuing...", [[("🛑 Stop", "stopcheck", "danger")]])
-            else:
-                await edit_menu(m, "ℹ️ No paused check.", [[("⬅️ Back", "menu", "danger")]])
+            try:
+                await q.answer("▶️ Resumed", show_alert=False)
+            except:
+                pass
+            await edit_menu(m, "▶️ <b>Resumed</b> — check continuing...", [[("🛑 Stop", "stopcheck", "danger"), ("⏸️ Pause", "pausecheck", "primary")]])
             return
 
         if data == "menu":
