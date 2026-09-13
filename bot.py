@@ -927,26 +927,28 @@ def is_manual_proxy_url(url: str) -> bool:
     return url in MANUAL_PROXY_URLS
 
 def harvest_proxies() -> List[str]:
+    """Parallel harvest from 12 sources — fast (fixes 5 min slowness)."""
     raw = set()
-    s = requests.Session()
-    for url in PROXY_SOURCES:
+    raw_lock = threading.Lock()
+
+    def fetch_one(url: str):
+        s = requests.Session()
         for verify in (True, False):
             try:
-                r = s.get(url, timeout=12, headers={"User-Agent": BARO_WUA}, verify=verify)
+                r = s.get(url, timeout=8, headers={"User-Agent": BARO_WUA}, verify=verify)
                 if r.status_code == 200 and r.text:
+                    local = set()
                     for line in r.text.splitlines():
                         line = line.strip()
                         if not line or line.startswith("#"):
                             continue
-                        # Handle JSON or plain text
                         if line.startswith("{") or line.startswith("["):
                             try:
                                 j = json.loads(r.text)
-                                # proxyscrape v4 returns text, but handle json
                                 if isinstance(j, dict) and "data" in j:
                                     for p in j["data"]:
                                         if isinstance(p, dict) and p.get("ip"):
-                                            raw.add(f"{p['ip']}:{p['port']}")
+                                            local.add(f"{p['ip']}:{p['port']}")
                                     break
                             except Exception:
                                 pass
@@ -954,21 +956,29 @@ def harvest_proxies() -> List[str]:
                         if "://" in line:
                             line = line.split("://", 1)[-1]
                         line = line.split("/")[0].split()[0]
-                        # ip:port
                         if re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+$", line):
-                            raw.add(line)
-                        # domain:port? keep as is
+                            local.add(line)
                         elif re.match(r"^[a-zA-Z0-9.-]+:\d+$", line) and "." in line:
-                            raw.add(line)
+                            local.add(line)
+                    with raw_lock:
+                        raw.update(local)
                     break
-            except requests.RequestException as e:
+            except requests.RequestException:
                 if verify:
                     continue
                 else:
-                    logger.debug("harvest fail %s: %s", url, e)
                     break
             except Exception:
                 break
+
+    # Parallel fetch all 12 sources at once (was sequential 12*12s = 144s)
+    with ThreadPoolExecutor(max_workers=12) as ex:
+        futures = [ex.submit(fetch_one, u) for u in PROXY_SOURCES]
+        for f in as_completed(futures):
+            try:
+                f.result()
+            except Exception:
+                pass
     return list(raw)
 
 def test_one_proxy(proxy_str: str) -> Optional[dict]:
@@ -1063,7 +1073,13 @@ def ensure_proxies() -> None:
     if proxy_count() == 0:
         _load_pool_into_live()
         if proxy_count() == 0:
-            refresh_live_proxies(force=True)
+            # Don't block check if background refresh already running — try quick non-blocking refresh
+            # If still 0, let check run direct (fallback) rather than waiting 5 min
+            try:
+                # Try to get at least 10 quickly without blocking long
+                refresh_live_proxies(force=False)
+            except Exception:
+                pass
 
 def _proxy_loop() -> None:
     # 24x7 auto proxy loader — respects Auto Load toggle in Proxy Settings
@@ -3247,17 +3263,29 @@ def main():
     print(f"[*] CrunchyrollChecker — BlazeNXT single checker starting")
     print(f"[*] Owner: {OWNER_USERNAME} ({OWNER_ID}) | Threads: {THREADS} | Data dir: {DATA_DIR.resolve()}")
 
+    # Fast startup: load manual high-level proxies instantly, bot ready immediately
     _load_pool_into_live()
-    # Immediate auto-load if enabled
     try:
-        if bool(STORE.get_setting("auto_proxy", True)):
-            refresh_live_proxies(force=True)
-            print(f"[*] Auto proxies initial: {proxy_count()} live")
-        else:
-            print(f"[*] Auto Load OFF — skipping initial refresh")
-    except Exception as e:
-        print(f"[!] Initial proxy refresh failed: {e}")
-    import threading
+        auto_on = bool(STORE.get_setting("auto_proxy", True)) if STORE else True
+    except Exception:
+        auto_on = True
+
+    if auto_on:
+        # Background auto-load: don't block bot startup (fixes 5 min delay)
+        def _bg_initial_refresh():
+            try:
+                # Small delay to let bot polling start first
+                time.sleep(2)
+                refresh_live_proxies(force=True)
+                print(f"[*] Auto proxies background ready: {proxy_count()} live (auto={len(AUTO_PROXY_URLS)} manual={len(MANUAL_PROXY_URLS)})")
+            except Exception as e:
+                print(f"[!] Background proxy refresh failed: {e}")
+        threading.Thread(target=_bg_initial_refresh, daemon=True).start()
+        print(f"[*] Bot starting INSTANTLY — pool: {pool_size()} live: {proxy_count()} (manual={len(MANUAL_PROXY_URLS)}) — auto refresh in background")
+    else:
+        print(f"[*] Auto Load OFF — bot ready instantly with manual pool: {pool_size()} live: {proxy_count()}")
+
+    # 24x7 watchdog loop in background
     threading.Thread(target=_proxy_loop, daemon=True).start()
 
     from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
