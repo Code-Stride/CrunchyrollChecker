@@ -1886,7 +1886,7 @@ def welcome_premium_text(uid: int, name: str) -> str:
         "│  🔥 <b>BlazeNXT</b> — <i>CRUNCHYROLL</i> 🔥  │\n"
         "│  <i>Premium Checker • FREE</i>   │\n"
         "╰────────────────────────╯\n"
-        f"👋 Hey <b>{esc(name) if name and not str(name).isdigit() else 'BlazeNXT'}</b>\n"
+        f"👋 Hey <b>{esc(name)}</b>\n"
         f"{access_line}\n"
         "┌─ <b>STATS</b> ────────────────┐\n"
         f"│ 🌐 Proxies: <code>{proxy_count()} live</code> • 📦 Pool: <code>{pool_size()}</code>\n"
@@ -2273,8 +2273,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user or not msg:
         return
     uid = user.id
-    _raw = getattr(user, "first_name", None) or getattr(user, "username", None) or str(uid)
-    name = _raw if _raw and not str(_raw).isdigit() else (getattr(user, "username", None) or "BlazeNXT")
+    name = getattr(user, "first_name", None) or getattr(user, "username", None) or str(uid)
     if not is_admin(uid, getattr(user, "username", None)):
         await reply_menu(msg, f"❌ <b>Access Denied</b>\n\nThis bot is <b>Owner + Admins only</b>.\nContact owner: <code>{OWNER_USERNAME}</code>", [[("⬅️ Back", "menu", "danger")]])
         return
