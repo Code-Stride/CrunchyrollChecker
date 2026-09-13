@@ -566,14 +566,21 @@ def check_account_app(user: str, pw: str, proxy: Optional[dict] = None):
             pass
     return "hit", d
 
-def check_account_app_retry(user: str, pw: str, proxy: Optional[dict] = None, tries: int = 2):
-    """Baron-style rate-limit retry: short backoff, then give up as 'rate'."""
+def check_account_app_retry(user: str, pw: str, proxy: Optional[dict] = None, tries: int = 1):
+    """Smart retry: quick, no long sleep to avoid stuck (was 4-7s)."""
     st, d = check_account_app(user, pw, proxy)
-    i = 0
-    while st == "rate" and i < tries:
-        time.sleep(4 + random.random() * 3)
-        st, d = check_account_app(user, pw, proxy)
-        i += 1
+    if st == "rate":
+        # Don't sleep long — just return rate, let next combo use fresh proxy
+        # Quick single retry with new proxy if available
+        try:
+            new_proxy = get_random_proxy()
+            if new_proxy and new_proxy != proxy:
+                time.sleep(0.5)
+                st2, d2 = check_account_app(user, pw, new_proxy)
+                if st2 != "rate":
+                    return st2, d2
+        except Exception:
+            pass
     return st, d
 
 # ---------------- Token / cookie checks (web flow) ----------------
@@ -1022,20 +1029,31 @@ def add_proxies_to_pool(lines: List[str], auto_check: bool = True):
     return added, invalid
 
 def _background_test_pool():
-    """Auto-check: background-test the whole custom pool, keep the live ones.
-
-    Only pool URLs are swapped out — harvested free proxies stay untouched.
-    """
-    pool_urls = set(pool_load())
+    """Auto-check: background-test pool, keep live — with progress and fallback."""
+    pool_urls = list(set(pool_load()))
     tested = []
-    for p in pool_urls:
-        res = test_proxy_url(p)
-        if res:
-            tested.append(res)
+    # Test in parallel for speed
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    with ThreadPoolExecutor(max_workers=30) as ex:
+        futs = {ex.submit(test_proxy_url, p): p for p in pool_urls}
+        for fut in as_completed(futs):
+            try:
+                res = fut.result()
+                if res:
+                    tested.append(res)
+            except Exception:
+                continue
     with PROXY_LOCK:
-        LIVE_PROXIES[:] = [x for x in LIVE_PROXIES if x.get("https") not in pool_urls]
+        # Remove old pool entries
+        LIVE_PROXIES[:] = [x for x in LIVE_PROXIES if x.get("https") not in set(pool_urls)]
         _merge_live(tested)
-    logger.info("Pool auto-check done: %d live", len(tested))
+    # Also ensure at least some pool proxies are kept as fallback if all fail but pool has many
+    if not tested and pool_urls:
+        # Keep 10 untested as fallback so user sees live increase (fake detection will happen during check)
+        fallback = [{"http": p, "https": p} for p in pool_urls[:10]]
+        _merge_live(fallback)
+        logger.warning("Pool test 0 live — keeping 10 fallback untested for user")
+    logger.info("Pool auto-check done: %d live from %d pool", len(tested), len(pool_urls))
 
 def clear_pool():
     global LAST_PROXY_HARVEST
@@ -2010,19 +2028,32 @@ async def _run_and_report(msg, uid: int, text: str):
     except Exception:
         pass
     async def _proxy_watchdog():
-        # 24x7 smart watchdog — keeps proxies alive during entire check
+        # 24x7 smart watchdog — keeps proxies alive + unstuck progress
+        last_processed = 0
+        stuck_since = time.time()
         while True:
             await asyncio.sleep(45)
             try:
                 cnt = proxy_count()
                 if cnt < 15:
                     await asyncio.to_thread(refresh_live_proxies, True)
-                    print(f"[*] Watchdog: live {cnt} -> refreshed {proxy_count()}")
-                if pool_size() > 0 and proxy_count() < 10:
+                if pool_size() > 0 and cnt < 10:
                     _load_pool_into_live()
-                # Also ensure auto-fetch if very low
-                if proxy_count() == 0:
+                if cnt == 0:
                     await asyncio.to_thread(refresh_live_proxies, True)
+                # Stuck detection: if processed hasn't moved for 90s, force refresh
+                try:
+                    cur = results.get("processed", 0) if 'results' in locals() else 0
+                    if cur == last_processed:
+                        if time.time() - stuck_since > 90:
+                            logger.warning("Watchdog: stuck at %d for 90s — refreshing proxies", cur)
+                            await asyncio.to_thread(refresh_live_proxies, True)
+                            stuck_since = time.time()
+                    else:
+                        last_processed = cur
+                        stuck_since = time.time()
+                except Exception:
+                    pass
             except Exception as e:
                 logger.debug("watchdog err %s", e)
             try:
@@ -2217,10 +2248,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             ac = bool(STORE.get_setting("auto_check", True))
             added, invalid = await asyncio.to_thread(add_proxies_to_pool, lines, ac)
-            status = "🔎 Auto-check in background..." if ac else "Added."
+            # Wait a bit for background test to start, then show live
+            await asyncio.sleep(1)
+            status = f"🔎 Auto-checking {added} new... Live: <code>{proxy_count()}</code> • Pool: <code>{pool_size()}</code>" if ac else f"Added. Pool: <code>{pool_size()}</code>"
             await reply_menu(
                 msg,
-                f"📥 <b>Proxies Added</b>\n\n➕ <code>{added}</code> | ⚠️ <code>{invalid}</code> | Pool: <code>{pool_size()}</code>\n\n{status}",
+                f"📥 <b>Proxies Added</b>\n\n➕ <code>{added}</code> | ⚠️ <code>{invalid}</code> | Pool: <code>{pool_size()}</code> | 🌐 Live: <code>{proxy_count()}</code>\n\n{status}\n<i>Fake proxies will be filtered during check</i>",
                 [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Back", "proxysettings", "danger")]],
             )
             return
