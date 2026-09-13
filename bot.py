@@ -2035,40 +2035,33 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     uid = user.id
     name = getattr(user, "first_name", None) or getattr(user, "username", None) or str(uid)
-    if _has_access(uid):
-        try:
-            text = welcome_premium_text(uid, name)
-            is_owner = is_admin(uid, getattr(user, "username", None))
-            if is_owner:
-                text = "👑 <b>Welcome Owner!</b>\n" + "━━━━━━━━━━━━━━━━━━━━━\n" + text
-            t2, rows2 = menu_main(uid)
-            # Completely remove reply keyboard (single visible message via edit)
-            try:
-                tmp = await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=ReplyKeyboardRemove())
-                try:
-                    await tmp.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=_build_kb(rows2))
-                except Exception:
-                    await reply_menu(msg, text, rows2)
-            except Exception:
-                await reply_menu(msg, text, rows2)
-            return
-        except Exception as e:
-            logger.warning("hybrid menu send failed %s", e)
-            pass
-        except Exception:
-            pass
-    text, rows = menu_main(uid)
-    is_owner = is_admin(uid, getattr(user, "username", None))
-    if is_owner:
-        text = "👑 <b>Welcome Owner!</b>\n\n" + text
+    # Single path — no double message, board completely removed
+    try:
+        text = welcome_premium_text(uid, name)
+        is_owner = is_admin(uid, getattr(user, "username", None))
+        if is_owner:
+            text = "👑 <b>Welcome Owner!</b>\n" + "━━━━━━━━━━━━━━━━━━━━━\n" + text
+    except Exception as e:
+        logger.warning("welcome failed %s", e)
+        text, _ = menu_main(uid)
+        if is_admin(uid, getattr(user, "username", None)):
+            text = "👑 <b>Welcome Owner!</b>\n\n" + text
+    _, rows = menu_main(uid)
+    # Remove reply keyboard completely — single visible message
     try:
         tmp = await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=ReplyKeyboardRemove())
         try:
             await tmp.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=_build_kb(rows))
         except Exception:
+            pass
+        return
+    except Exception as e:
+        logger.warning("cmd_start send failed %s", e)
+        try:
             await reply_menu(msg, text, rows)
-    except Exception:
-        await reply_menu(msg, text, rows)
+        except Exception:
+            pass
+        return
 
 async def cmd_any(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Catch-all for any typed /command -> steer the user to the buttons."""
