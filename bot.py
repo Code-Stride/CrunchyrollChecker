@@ -893,6 +893,7 @@ MANUAL_PX_IDX = [0]
 PROXY_SCORES: dict = {}
 REFRESH_STATE: dict = {"tested": 0, "live": 0, "total": 0, "start": 0}
 REFRESH_STOP_REQUEST = False  # for stop option during refreshing proxy
+REFRESH_EXECUTOR = None  # holds current ThreadPoolExecutor for instant stop
 PROXY_LOCK = threading.Lock()
 _refresh_busy = threading.Lock()
 LAST_PROXY_HARVEST = 0.0
@@ -1078,7 +1079,7 @@ def test_proxy_url(proxy_url: str) -> Optional[dict]:
     return None
 
 def refresh_live_proxies(force: bool = False) -> None:
-    global LIVE_PROXIES, LAST_PROXY_HARVEST, REFRESH_STOP_REQUEST
+    global LIVE_PROXIES, LAST_PROXY_HARVEST, REFRESH_STOP_REQUEST, REFRESH_EXECUTOR
     now = time.time()
     with PROXY_LOCK:
         fresh = LIVE_PROXIES and (now - LAST_PROXY_HARVEST) < PROXY_REFRESH_MINUTES * 60
@@ -1088,7 +1089,14 @@ def refresh_live_proxies(force: bool = False) -> None:
         return
     try:
         logger.info("Refreshing live proxy pool...")
+        # check stop before harvest
+        if REFRESH_STOP_REQUEST:
+            logger.info("Refresh stopped before harvest")
+            return
         candidates = harvest_proxies()
+        if REFRESH_STOP_REQUEST:
+            print("[*] Proxy refresh stopped by user (after harvest)")
+            return
         if not candidates:
             logger.warning("No proxies harvested")
             return
@@ -1099,27 +1107,35 @@ def refresh_live_proxies(force: bool = False) -> None:
         REFRESH_STATE["tested"] = 0
         REFRESH_STATE["live"] = 0
         REFRESH_STATE["start"] = time.time()
-        REFRESH_STOP_REQUEST = False
-        with ThreadPoolExecutor(max_workers=300) as ex:
+        # do NOT reset STOP flag here if already True - keep it
+        if REFRESH_STOP_REQUEST:
+            return
+        # create executor and keep global reference for instant stop
+        ex = ThreadPoolExecutor(max_workers=300)
+        REFRESH_EXECUTOR = ex
+        try:
             futures = {ex.submit(test_one_proxy, p): p for p in to_test}
             for fut in as_completed(futures):
                 if REFRESH_STOP_REQUEST:
-                    print("[*] Proxy refresh stopped by user")
-                    for f in futures:
+                    print("[*] Proxy refresh stopped by user - cancelling...")
+                    try:
+                        ex.shutdown(wait=False, cancel_futures=True)
+                    except TypeError:
+                        # Python <3.9 fallback
                         try:
-                            f.cancel()
+                            for f in futures:
+                                f.cancel()
                         except:
                             pass
                     break
                 REFRESH_STATE["tested"] += 1
                 try:
-                    res = fut.result()
+                    res = fut.result(timeout=0.1)
                 except Exception:
                     continue
                 if res:
                     live.append(res)
                     REFRESH_STATE["live"] = len(live)
-                    # bump score
                     try:
                         url = res.get("https","")
                         if url:
@@ -1127,9 +1143,41 @@ def refresh_live_proxies(force: bool = False) -> None:
                     except:
                         pass
                     if len(live) >= MAX_PROXIES_TO_KEEP:
-                        for f in futures:
-                            f.cancel()
+                        try:
+                            ex.shutdown(wait=False, cancel_futures=True)
+                        except TypeError:
+                            for f in futures:
+                                try:
+                                    f.cancel()
+                                except:
+                                    pass
                         break
+        finally:
+            REFRESH_EXECUTOR = None
+            try:
+                ex.shutdown(wait=False, cancel_futures=True)
+            except TypeError:
+                try:
+                    ex.shutdown(wait=False)
+                except:
+                    pass
+
+        if REFRESH_STOP_REQUEST:
+            print(f"[*] Proxy refresh stopped - keeping {len(live)} live found so far")
+            # still save what we have if user stopped
+            if live:
+                with PROXY_LOCK:
+                    manual_keep = [p for p in LIVE_PROXIES if p.get("https") in MANUAL_PROXY_URLS]
+                    LIVE_PROXIES = manual_keep + live
+                    LAST_PROXY_HARVEST = now
+                    AUTO_PROXY_URLS.clear()
+                    for p in live:
+                        url = p.get("https") or ""
+                        if url and url not in MANUAL_PROXY_URLS:
+                            AUTO_PROXY_URLS.add(url)
+                threading.Thread(target=save_proxy_scores, daemon=True).start()
+            return
+
         if not live and candidates:
             fallback = [{"http": f"http://{c}", "https": f"http://{c}"} for c in candidates[:20]]
             live = fallback
@@ -1144,7 +1192,6 @@ def refresh_live_proxies(force: bool = False) -> None:
                 if url and url not in MANUAL_PROXY_URLS:
                     AUTO_PROXY_URLS.add(url)
         threading.Thread(target=save_proxy_scores, daemon=True).start()
-        # Save pool to file for persistence
         try:
             pool_items = [p.get("https","") for p in LIVE_PROXIES if p.get("https")]
             if pool_items:
@@ -1153,6 +1200,7 @@ def refresh_live_proxies(force: bool = False) -> None:
             logger.warning(f"pool_save failed: {e}")
         logger.info("Live proxies ready: %d auto + %d manual = %d total (tested %d from %d candidates) - AUTO LOAD FIX", len(live), len(manual_keep) if 'manual_keep' in locals() else 0, len(LIVE_PROXIES), len(to_test) if 'to_test' in locals() else 0, len(candidates) if 'candidates' in locals() else 0)
     finally:
+        REFRESH_EXECUTOR = None
         _refresh_busy.release()
 
 def ensure_proxies() -> None:
@@ -2869,6 +2917,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
 async def cmd_any(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global REFRESH_STOP_REQUEST, REFRESH_EXECUTOR
     try:
         user = update.effective_user
         msg = update.effective_message
@@ -2896,7 +2945,34 @@ async def cmd_any(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if busy:
                 await reply_menu(msg, "🛑 <b>Stopping...</b>\n<i>Current scan will stop in a moment</i>", [[("🛑 Stop Again", "stopcheck", "danger"), ("⬅️ Menu", "menu", "danger")]])
             else:
+                # also try stop proxy refresh if running
+                try:
+                    if REFRESH_EXECUTOR is not None:
+                        REFRESH_STOP_REQUEST = True
+                        try:
+                            REFRESH_EXECUTOR.shutdown(wait=False, cancel_futures=True)
+                        except:
+                            pass
+                        await reply_menu(msg, "🛑 <b>Stopping proxy refresh...</b>\n<i>Cancelling...</i>", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Menu", "menu", "danger")]])
+                        return
+                except:
+                    pass
                 await reply_menu(msg, "ℹ️ No active check running.", [[("⬅️ Back", "menu", "danger")]])
+            return
+        if txt_lower in ("/stoprefresh", "/stopproxy", "/cancelrefresh"):
+            if not is_admin(user.id, getattr(user, "username", None)):
+                await reply_menu(msg, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
+                return
+            try:
+                REFRESH_STOP_REQUEST = True
+                if REFRESH_EXECUTOR is not None:
+                    try:
+                        REFRESH_EXECUTOR.shutdown(wait=False, cancel_futures=True)
+                    except:
+                        pass
+                await reply_menu(msg, "🛑 <b>Stopping proxy refresh...</b>\n<i>Will stop in 1-2 sec</i>\n🌐 Live: <code>{}</code> Pool: <code>{}</code>".format(proxy_count(), pool_size()), [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Back", "menu", "danger")]])
+            except Exception as e:
+                await reply_menu(msg, f"❌ Error: <code>{esc(str(e))}</code>", [[("⬅️ Back", "menu", "danger")]])
             return
         if txt_lower in ("/pause", "/pausecheck"):
             if not is_admin(uid, getattr(user, "username", None)):
@@ -3547,7 +3623,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global THREADS, REFRESH_STOP_REQUEST
+    global THREADS, REFRESH_STOP_REQUEST, REFRESH_EXECUTOR
     try:
         q = update.callback_query
         if not q:
@@ -3684,13 +3760,25 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await edit_menu(m, "ℹ️ Use <b>⚙️ Proxy Settings</b>.", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Back", "menu", "danger")]])
             return
         elif data == "stoprefresh":
-            # Stop option during refreshing proxy - fixes user request
+            # Stop option during refreshing proxy - fixes user request - INSTANT
             REFRESH_STOP_REQUEST = True
+            # try to shutdown executor instantly
+            try:
+                if REFRESH_EXECUTOR is not None:
+                    try:
+                        REFRESH_EXECUTOR.shutdown(wait=False, cancel_futures=True)
+                    except TypeError:
+                        try:
+                            REFRESH_EXECUTOR.shutdown(wait=False)
+                        except:
+                            pass
+            except Exception:
+                pass
             try:
                 await q.answer("🛑 Stopping proxy refresh...", show_alert=False)
             except:
                 pass
-            await edit_menu(m, "🛑 <b>Stopping proxy refresh...</b>\nPlease wait, cancelling...", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Back", "menu", "danger")]])
+            await edit_menu(m, "🛑 <b>Stopping proxy refresh...</b>\n⏳ Cancelling 300 workers...\nPlease wait 1-2 sec...", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Back", "menu", "danger")]])
             return
 
         elif data == "addpx":
@@ -3868,6 +3956,9 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 while True:
                     await asyncio.sleep(1.2)
                     try:
+                        if REFRESH_STOP_REQUEST:
+                            await edit_menu(m, "🛑 <b>Stopping proxy refresh...</b>\n⏳ Cancelling 300 workers...", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Back", "menu", "danger")]])
+                            break
                         tested = REFRESH_STATE.get("tested", 0)
                         total = REFRESH_STATE.get("total", 1000) or 1000
                         live = REFRESH_STATE.get("live", 0)
@@ -3876,7 +3967,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         elapsed = int(time.time() - REFRESH_STATE.get("start", time.time()))
                         rate = tested / max(1, elapsed)
                         eta = int((total - tested) / max(1, rate)) if rate else 0
-                        await edit_menu(m, f"🔄 <b>Refreshing — Live</b>\n\n📦 Testing {tested}/{total} [{bar}] {pct}%\n🌐 Live: <code>{live}</code> | Rate: <code>{live}/{tested}</code>\n⏱ Elapsed: <code>{elapsed}s</code> | ETA: <code>{eta}s</code>\n⚡ 300 workers | Scoring ON\n\nPress Stop to cancel", [[("🛑 Stop Refresh", "stoprefresh", "danger"), ("⬅️ Back", "proxysettings", "danger")]])
+                        await edit_menu(m, f"🔄 <b>Refreshing — Live</b>\n\n📦 Testing {tested}/{total} [{bar}] {pct}%\n🌐 Live: <code>{live}</code> | Rate: <code>{live}/{tested}</code>\n⏱ Elapsed: <code>{elapsed}s</code> | ETA: <code>{eta}s</code>\n⚡ 300 workers | Scoring ON\n\n🛑 Press Stop to cancel anytime", [[("🛑 Stop Refresh", "stoprefresh", "danger"), ("⬅️ Back", "proxysettings", "danger")]])
                     except Exception:
                         break
             prog=asyncio.create_task(_rp())
@@ -4123,6 +4214,8 @@ def main():
         _app.add_handler(CommandHandler("stop", cmd_any))
         _app.add_handler(CommandHandler("cancel", cmd_any))
         _app.add_handler(CommandHandler("stopcheck", cmd_any))
+        _app.add_handler(CommandHandler("stoprefresh", cmd_any))
+        _app.add_handler(CommandHandler("stopproxy", cmd_any))
         _app.add_handler(CommandHandler("pause", cmd_any))
         _app.add_handler(CommandHandler("resume", cmd_any))
         _app.add_handler(CommandHandler("clean", cmd_any))
