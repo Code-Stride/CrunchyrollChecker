@@ -1679,37 +1679,13 @@ _CAPS = {"icon": None, "style": None}  # None = untested, False = rejected, True
 # ────────────────── Premium Emoji (BlazeNXT — ULTRA LEGENDRY) ──────────────────
 # All unicode emojis are replaced with premium custom-emoji IDs from @fStikBot / @TgEmojis
 # Provided by user: ~600 IDs. Mapping below covers every emoji used in BlazeNXT.
-# Button icons use icon_custom_emoji_id, message emojis use <tg-emoji> tags.
-PREMIUM_EMOJI = {}
+# Button icons use icon_custom_emoji_id, message emojis use  tags.
+PREMIUM_EMOJI = {}  # removed — single checker plain
 
 def _premium_wrap(text: str) -> str:
     return text
 def _premium_wrap_disabled(text: str) -> str:
-    """Replace unicode emojis with premium <tg-emoji> tags for HTML (single-pass, no nesting)."""
-    if not text or "<tg-emoji" in text:
-        return text
-    import re as _re
-    # Build regex sorted longest first
-    try:
-        # Use set to avoid duplicate emoji keys causing regex alternation issues
-        keys = sorted(set(PREMIUM_EMOJI.keys()), key=len, reverse=True)
-        # Escape and join
-        pat = _re.compile("|".join(_re.escape(k) for k in keys))
-        def _repl(m):
-            uni = m.group(0)
-            eid = PREMIUM_EMOJI.get(uni)
-            if eid:
-                return f'<tg-emoji emoji-id="{eid}">{uni}</tg-emoji>'
-            return uni
-        return pat.sub(_repl, text)
-    except Exception:
-        # fallback loop (should not happen)
-        for uni in sorted(PREMIUM_EMOJI, key=len, reverse=True):
-            if uni in text:
-                eid = PREMIUM_EMOJI[uni]
-                tag = f'<tg-emoji emoji-id="{eid}">{uni}</tg-emoji>'
-                text = text.replace(uni, tag)
-        return text
+    return text
 
 def _premium_icon(label: str) -> str | None:
     """Pick best premium icon ID for a button label (first emoji found)."""
@@ -1719,37 +1695,28 @@ def _premium_icon(label: str) -> str | None:
     return None
 
 # BlazeNXT ribbon brand
-BLAZENXT_RIBBON = f'<tg-emoji emoji-id="{PREMIUM_EMOJI["🎀"]}">🎀</tg-emoji>'
-BLAZENXT_BRAND = f'<tg-emoji emoji-id="{PREMIUM_EMOJI["🔥"]}">🔥</tg-emoji> <b>BlazeNXT</b> {BLAZENXT_RIBBON}'
+BLAZENXT_RIBBON = ""
+BLAZENXT_BRAND = "<b>BlazeNXT</b>"
 
 def _build_kb(rows) -> InlineKeyboardMarkup:
     """rows: list of rows; each row = list of (label, cb) or (label, cb, style) or (label, cb, style, icon)."""
-    use_icon = _CAPS["icon"] is not False
-    use_style = _CAPS["style"] is not False
     data = []
     for row in rows or []:
-        btns = []
+        line = []
         for item in row:
-            label, cb = item[0], item[1]
-            style = item[2] if len(item) > 2 else None
-            icon = item[3] if len(item) > 3 else None
-            kwargs = {}
-            if use_icon:
-                if icon:
-                    kwargs["icon_custom_emoji_id"] = str(icon)
-                else:
-                    # auto premium icon from label
-                    pid = _premium_icon(label) if "_premium_icon" in globals() else None
-                    kwargs["icon_custom_emoji_id"] = pid or CUSTOM_EMOJI_ID
-            if style and use_style:
-                kwargs["style"] = style
-            btns.append(InlineKeyboardButton(label, callback_data=cb, **kwargs))
-        data.append(btns)
+            if not item:
+                continue
+            label = item[0]
+            cb = item[1] if len(item) > 1 else None
+            # Plain button without premium icons
+            line.append(InlineKeyboardButton(label, callback_data=cb))
+        if line:
+            data.append(line)
     return InlineKeyboardMarkup(data)
 
 async def _send_menu(msg, text: str, rows, edit: bool) -> bool:
     """Send/edit a message with a button menu. Graceful degradation of 9.4 fields."""
-    text = _premium_wrap(text) if "_premium_wrap" in globals() else text
+    text = text
     for _attempt in range(4):
         use_icon = _CAPS["icon"] is not False
         use_style = _CAPS["style"] is not False
@@ -1788,50 +1755,12 @@ async def edit_menu(msg, text, rows):
 # Hybrid: main menus use ReplyKeyboardMarkup (persistent bottom keyboard),
 # sub-menus still use InlineKeyboardMarkup. This matches user choice "hybrid".
 def _build_reply_kb(rows, resize=True, one_time=False) -> ReplyKeyboardMarkup:
-    """rows: each item can be (label), (label,style), (label,style,icon), (label,style,icon,web_app_url) or dict."""
-    use_icon = _CAPS["icon"] is not False
-    use_style = _CAPS["style"] is not False
     kb = []
     for row in rows:
         btns = []
         for item in row:
-            # parse tuple/list
-            label = ""
-            style = None
-            icon = None
-            web_app = None
-            if isinstance(item, (list, tuple)):
-                label = item[0] if len(item) > 0 else ""
-                style = item[1] if len(item) > 1 else None
-                icon = item[2] if len(item) > 2 else None
-                web_app = item[3] if len(item) > 3 else None
-            elif isinstance(item, dict):
-                label = item.get("text", "")
-                style = item.get("style")
-                icon = item.get("icon_custom_emoji_id") or item.get("icon")
-                web_app = item.get("web_app") or item.get("web_app_url")
-            else:
-                label, style = item, None
-            kwargs = {}
-            # icon: premium mapping fallback
-            if use_icon:
-                if icon:
-                    kwargs["icon_custom_emoji_id"] = str(icon)
-                else:
-                    pid = _premium_icon(label) if "_premium_icon" in globals() else None
-                    kwargs["icon_custom_emoji_id"] = pid or CUSTOM_EMOJI_ID
-            if style and use_style and style in ("primary","success","danger"):
-                kwargs["style"] = style
-            if web_app:
-                try:
-                    from telegram import WebAppInfo as _WAI
-                    if isinstance(web_app, str):
-                        kwargs["web_app"] = _WAI(url=web_app)
-                    else:
-                        kwargs["web_app"] = web_app
-                except Exception:
-                    pass
-            btns.append(KeyboardButton(label, **kwargs))
+            label = item[0] if isinstance(item, (list, tuple)) else str(item)
+            btns.append(KeyboardButton(label))
         kb.append(btns)
     return ReplyKeyboardMarkup(kb, resize_keyboard=resize, one_time_keyboard=one_time)
 
@@ -1892,7 +1821,7 @@ REPLY_TEXT_MAP = {
 
 async def _send_reply_menu(msg, text: str, reply_kb: ReplyKeyboardMarkup, inline_rows=None):
     """Send text with ReplyKeyboard (colored) + fallback handling"""
-    text = _premium_wrap(text) if "_premium_wrap" in globals() else text
+    text = text
     for _attempt in range(4):
         use_icon = _CAPS["icon"] is not False
         use_style = _CAPS["style"] is not False
