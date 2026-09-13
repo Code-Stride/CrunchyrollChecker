@@ -1993,7 +1993,7 @@ def menu_main(uid: int):
         [("📖 How To Use", "help", "primary"), ("📊 Bot Stats", "status", "primary")],
         [("⚙️ Proxy Settings", "proxysettings", "primary")],
     ]
-    if is_admin(uid):
+    if uid == OWNER_ID:
         rows.append([("👥 Admins", "admins", "primary")])
     return header, rows
 
@@ -2438,6 +2438,37 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+        if kind == "addadmin":
+            clear_pending(uid)
+            if uid != OWNER_ID:
+                await reply_menu(msg, "❌ Owner only.", [[("⬅️ Back", "menu", "danger")]])
+                return
+            arg = text.strip().lstrip("@")
+            try:
+                if arg.isdigit():
+                    ok = STORE.add_admin(int(arg))
+                    await reply_menu(msg, f"{'✅ Added' if ok else 'ℹ️ Already'} admin: <code>{arg}</code>", [[("👥 Admins", "admins", "primary"), ("⬅️ Back", "menu", "danger")]])
+                else:
+                    ok = STORE.add_admin(0, arg)
+                    await reply_menu(msg, f"{'✅ Added' if ok else 'ℹ️ Already'} admin: @{arg}", [[("👥 Admins", "admins", "primary"), ("⬅️ Back", "menu", "danger")]])
+            except Exception as e:
+                await reply_menu(msg, f"❌ Error: <code>{e}</code>", [[("⬅️ Back", "admins", "danger")]])
+            return
+        if kind == "remadmin":
+            clear_pending(uid)
+            if uid != OWNER_ID:
+                await reply_menu(msg, "❌ Owner only.", [[("⬅️ Back", "menu", "danger")]])
+                return
+            arg = text.strip().lstrip("@")
+            try:
+                if arg.isdigit():
+                    ok = STORE.remove_admin(int(arg))
+                else:
+                    ok = STORE.remove_admin(None, arg)
+                await reply_menu(msg, f"{'✅ Removed' if ok else '❌ Not found'}: <code>{arg}</code>", [[("👥 Admins", "admins", "primary"), ("⬅️ Back", "menu", "danger")]])
+            except Exception as e:
+                await reply_menu(msg, f"❌ Error: <code>{e}</code>", [[("⬅️ Back", "admins", "danger")]])
+            return
         if kind in ("tv_email", "tv_code"):
             clear_pending(uid)
             await reply_menu(msg, "ℹ️ TV removed — just a checker now.", [[("⬅️ Menu", "menu", "danger")]])
@@ -2693,15 +2724,38 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await edit_menu(m, f"❌ Error: <code>{esc(str(e)[:120])}</code>", [[("⬅️ Back", "proxysettings", "danger")]])
         return
     elif data == "admins":
+        if uid != OWNER_ID and uid not in ADMIN_IDS:
+            await edit_menu(m, "❌ <b>Owner Only</b>", [[("⬅️ Back", "menu", "danger")]])
+            return
         admins = STORE.get_admins() if STORE else []
         admins_u = STORE.get_setting("admin_usernames", []) if STORE else []
-        txt2 = "👥 <b>Admins</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
-        txt2 += f"👑 Owner: <code>{OWNER_ID}</code>\n"
-        for a in admins:
-            txt2 += f"• <code>{a}</code>\n"
-        for u in admins_u:
-            txt2 += f"• @{u}\n"
-        await edit_menu(m, txt2, [[("⬅️ Back", "menu", "danger")]])
+        txt2 = "👥 <b>Admins — Owner Panel</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
+        txt2 += f"👑 Owner: <code>{OWNER_ID}</code> @{OWNER_USERNAME.lstrip('@')}\n"
+        txt2 += "━━━━━━━━━━━━━━━━━━━━━\n"
+        if admins or admins_u:
+            for a in admins:
+                txt2 += f"• <code>{a}</code>\n"
+            for u in admins_u:
+                txt2 += f"• @{u}\n"
+        else:
+            txt2 += "<i>No admins yet</i>\n"
+        txt2 += "━━━━━━━━━━━━━━━━━━━━━\n"
+        txt2 += "<i>Tap Add/Remove to manage</i>"
+        await edit_menu(m, txt2, [[("➕ Add Admin", "addadmin", "success"), ("➖ Remove Admin", "remadmin", "danger")], [("⬅️ Back", "menu", "danger")]])
+        return
+    elif data == "addadmin":
+        if uid != OWNER_ID:
+            await edit_menu(m, "❌ <b>Owner Only</b>", [[("⬅️ Back", "menu", "danger")]])
+            return
+        set_pending(uid, "addadmin")
+        await edit_menu(m, "➕ <b>Add Admin</b>\n\nSend <code>USER_ID</code> or <code>@username</code>\nOr forward a message from the user.", [[("⬅️ Back", "admins", "danger")]])
+        return
+    elif data == "remadmin":
+        if uid != OWNER_ID:
+            await edit_menu(m, "❌ <b>Owner Only</b>", [[("⬅️ Back", "menu", "danger")]])
+            return
+        set_pending(uid, "remadmin")
+        await edit_menu(m, "➖ <b>Remove Admin</b>\n\nSend <code>USER_ID</code> or <code>@username</code>", [[("⬅️ Back", "admins", "danger")]])
         return
     elif data in ("genpick", "gen_24", "gen_48", "gen_72", "autocheck", "oxaam", "tv"):
         await edit_menu(m, "ℹ️ <b>Just a Checker</b> — that feature was removed.\nUse <b>💎 Check Account</b> / <b>📂 Check File</b>.", [[("⬅️ Back", "menu", "danger")]])
