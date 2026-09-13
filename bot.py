@@ -892,6 +892,7 @@ AUTO_PROXY_URLS: set = set()
 MANUAL_PX_IDX = [0]
 PROXY_SCORES: dict = {}
 REFRESH_STATE: dict = {"tested": 0, "live": 0, "total": 0, "start": 0}
+REFRESH_STOP_REQUEST = False  # for stop option during refreshing proxy
 PROXY_LOCK = threading.Lock()
 _refresh_busy = threading.Lock()
 LAST_PROXY_HARVEST = 0.0
@@ -1077,7 +1078,7 @@ def test_proxy_url(proxy_url: str) -> Optional[dict]:
     return None
 
 def refresh_live_proxies(force: bool = False) -> None:
-    global LIVE_PROXIES, LAST_PROXY_HARVEST
+    global LIVE_PROXIES, LAST_PROXY_HARVEST, REFRESH_STOP_REQUEST
     now = time.time()
     with PROXY_LOCK:
         fresh = LIVE_PROXIES and (now - LAST_PROXY_HARVEST) < PROXY_REFRESH_MINUTES * 60
@@ -1098,9 +1099,18 @@ def refresh_live_proxies(force: bool = False) -> None:
         REFRESH_STATE["tested"] = 0
         REFRESH_STATE["live"] = 0
         REFRESH_STATE["start"] = time.time()
+        REFRESH_STOP_REQUEST = False
         with ThreadPoolExecutor(max_workers=300) as ex:
             futures = {ex.submit(test_one_proxy, p): p for p in to_test}
             for fut in as_completed(futures):
+                if REFRESH_STOP_REQUEST:
+                    print("[*] Proxy refresh stopped by user")
+                    for f in futures:
+                        try:
+                            f.cancel()
+                        except:
+                            pass
+                    break
                 REFRESH_STATE["tested"] += 1
                 try:
                     res = fut.result()
@@ -3537,7 +3547,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global THREADS
+    global THREADS, REFRESH_STOP_REQUEST
     try:
         q = update.callback_query
         if not q:
@@ -3673,6 +3683,16 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data == "pool":
             await edit_menu(m, "ℹ️ Use <b>⚙️ Proxy Settings</b>.", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Back", "menu", "danger")]])
             return
+        elif data == "stoprefresh":
+            # Stop option during refreshing proxy - fixes user request
+            REFRESH_STOP_REQUEST = True
+            try:
+                await q.answer("🛑 Stopping proxy refresh...", show_alert=False)
+            except:
+                pass
+            await edit_menu(m, "🛑 <b>Stopping proxy refresh...</b>\nPlease wait, cancelling...", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Back", "menu", "danger")]])
+            return
+
         elif data == "addpx":
             if not is_admin(uid, uname_btn):
                 await edit_menu(m, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
@@ -3841,8 +3861,9 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not is_admin(uid, uname_btn):
                 await edit_menu(m, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
                 return
+            REFRESH_STOP_REQUEST = False
             REFRESH_STATE["start"] = time.time()
-            await edit_menu(m, "🔄 <b>Refreshing proxies...</b>\n━━━━━━━━━━━━━━━━━━━━━\n⏳ <b>Gathering</b> from 12 sources...\n📦 <b>Queued</b> 1000 candidates", None)
+            await edit_menu(m, "🔄 <b>Refreshing proxies...</b>\n\n⏳ Gathering from 12 sources...\n📦 Queued 8000 candidates\n\nPress Stop to cancel", [[("🛑 Stop Refresh", "stoprefresh", "danger"), ("⬅️ Back", "proxysettings", "danger")]])
             async def _rp():
                 while True:
                     await asyncio.sleep(1.2)
@@ -3855,7 +3876,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         elapsed = int(time.time() - REFRESH_STATE.get("start", time.time()))
                         rate = tested / max(1, elapsed)
                         eta = int((total - tested) / max(1, rate)) if rate else 0
-                        await edit_menu(m, f"🔄 <b>Refreshing — Real Live</b>\n━━━━━━━━━━━━━━━━━━━━━\n📦 <b>Testing</b> {tested}/{total} [{bar}] {pct}%\n🌐 <b>Live:</b> <code>{live}</code> • ✅ <b>Rate:</b> <code>{live}/{tested}</code>\n⏱️ <b>Elapsed:</b> <code>{elapsed}s</code> • ⏳ <b>ETA:</b> <code>{eta}s</code>\n⚡ <b>100x Fast</b> • 150 workers • Scoring ON", None)
+                        await edit_menu(m, f"🔄 <b>Refreshing — Live</b>\n\n📦 Testing {tested}/{total} [{bar}] {pct}%\n🌐 Live: <code>{live}</code> | Rate: <code>{live}/{tested}</code>\n⏱ Elapsed: <code>{elapsed}s</code> | ETA: <code>{eta}s</code>\n⚡ 300 workers | Scoring ON\n\nPress Stop to cancel", [[("🛑 Stop Refresh", "stoprefresh", "danger"), ("⬅️ Back", "proxysettings", "danger")]])
                     except Exception:
                         break
             prog=asyncio.create_task(_rp())
@@ -3867,7 +3888,10 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elapsed = int(time.time() - REFRESH_STATE.get("start", time.time()))
             live = proxy_count()
             pool = pool_size()
-            await edit_menu(m, f"✅ <b>Auto Proxies Ready — Real</b>\n━━━━━━━━━━━━━━━━━━━━━\n🌐 <b>Live:</b> <code>{live}</code> • 📦 <b>Pool:</b> <code>{pool}</code> • Scores: <code>{len(PROXY_SCORES)}</code>\n⏱️ <b>Time:</b> <code>{elapsed}s</code> • Tested {REFRESH_STATE.get('tested',0)}/{REFRESH_STATE.get('total',0)}\n⚡ <b>100x Fast</b> • 1:1 ready • Scoring", [[("⚙️ Proxy Settings","proxysettings","primary"),("⬅️ Back","menu","danger")]])
+            if REFRESH_STOP_REQUEST:
+                await edit_menu(m, f"🛑 <b>Proxy Refresh Stopped</b>\n\n🌐 Live: <code>{proxy_count()}</code> | Pool: <code>{pool_size()}</code>\n⏱ Time: <code>{elapsed}s</code> | Tested {REFRESH_STATE.get('tested',0)}/{REFRESH_STATE.get('total',0)}\n\nStopped by user", [[("⚙️ Proxy Settings","proxysettings","primary"),("⬅️ Back","menu","danger")]])
+            else:
+                await edit_menu(m, f"✅ <b>Auto Proxies Ready — Real</b>\n\n🌐 Live: <code>{proxy_count() if 'proxy_count' in globals() else live}</code> | Pool: <code>{pool_size() if 'pool_size' in globals() else pool}</code> | Scores: <code>{len(PROXY_SCORES)}</code>\n⏱ Time: <code>{elapsed}s</code> | Tested {REFRESH_STATE.get('tested',0)}/{REFRESH_STATE.get('total',0)}\n⚡ 300 workers | 1:1 ready | Scoring", [[("⚙️ Proxy Settings","proxysettings","primary"),("⬅️ Back","menu","danger")]])
             return
         elif data == "admins":
             if not is_owner(uid):
