@@ -1506,11 +1506,10 @@ class ProgressReporter:
 # ===================== FORMATTING — BlazeNXT PREMIUM =====================
 def access_denied_html() -> str:
     return (
-        "⛔ <b>Access Denied</b>\n"
+        "✅ <b>Free Bot</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
-        "You don't have access to this bot.\n"
-        f"Get a code from the owner: <code>{esc(OWNER_USERNAME)}</code>\n\n"
-        "🎫 Press the button below and paste your code.\n"
+        "This bot is FREE — no code needed!\n"
+        "Just tap <b>💎 Check Account</b> to start.\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
         f"👤 Owner: <code>{esc(OWNER_USERNAME)}</code>"
     )
@@ -1638,9 +1637,7 @@ def help_text() -> str:
         "━━━━━━━━━━━━━━━━━━━━━\n"
         "💎 <b>Check Account</b> – paste <code>EMAIL:PASS</code> lines (1 or many)\n"
         "📂 <b>Check File</b> – send <code>.txt / .log / .json / .csv</code>\n"
-        "🎫 <b>Redeem</b> – paste an access code from the owner\n"
-        "🎛 <b>Output Mode</b> – Premium only / All working\n"
-        "✅ <b>My Access</b> – when your access expires\n"
+        "✅ <b>Free</b> – no code needed, just start checking!\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
         "👑 <b>Owner panel adds:</b>\n"
         "🔑 Generate codes (24 / 48 / 72h)\n"
@@ -1891,7 +1888,6 @@ REPLY_TEXT_MAP = {
     "⏳ 72 Hours": "gen_72",
     "🔁 Check Again": "check",
     "⬅️ Main Menu": "menu",
-    "🎫 Redeem Access Code": "redeem_flow",
 }
 
 async def _send_reply_menu(msg, text: str, reply_kb: ReplyKeyboardMarkup, inline_rows=None):
@@ -1941,8 +1937,8 @@ def clear_pending(uid: int):
         PENDING.pop(uid, None)
 
 def _has_access(uid: int) -> bool:
-    # access = admin OR has redeem
-    return is_admin(uid) or (STORE.has_access(uid)[0] if STORE else False)
+    # FREE MODE — no subscription, everyone has access
+    return True
 
 def _is_owner(uid: int, username: str = None) -> bool:
     return is_admin(uid, username)
@@ -1955,31 +1951,19 @@ AIO_SERVICES = [
 ]
 
 def menu_main(uid: int):
-    if _has_access(uid):
-        # BlazeNXT premium welcome header
-        try:
-            header = welcome_premium_text(uid, str(uid))
-        except Exception:
-            header = "🔥 <b>BlazeNXT</b> — <i>CRUNCHYROLL CHECKER</i> 🎀\n━━━━━━━━━━━━━━━━━━━━━"
-        # Core checker actions only — clean Crunchyroll-only (user chose crunchy_only) — Output Mode removed (fake)
-        rows = [
-            [("💎 Check Account", "check", "success"), ("📂 Check File", "file", "primary")],
-            [("✅ My Access", "myaccess", "success"), ("📖 How To", "help", "primary")],
-        ]
-        if is_admin(uid):
-            rows.append([("👑 Owner Panel", "opanel", "success")])
-        return header, rows
-    text = (
-        "⛔ <b>Access Required</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n"
-        "This bot is private.\n"
-        f"Get a code from the owner: <code>{esc(OWNER_USERNAME)}</code>\n\n"
-        "🎫 Press the button below and paste your code.\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n"
-        "🔥 <b>BlazeNXT</b>"
-    )
-    rows = [[("🎫 Redeem Access Code", "redeem_flow", "success")]]
-    return text, rows
+    # FREE MODE — single Crunchyroll checker, no subscription
+    try:
+        header = welcome_premium_text(uid, str(uid))
+    except Exception:
+        header = "🔥 <b>BlazeNXT</b> — <i>CRUNCHYROLL CHECKER</i>\n━━━━━━━━━━━━━━━━━━━━━"
+    # Core checker actions only — FREE
+    rows = [
+        [("💎 Check Account", "check", "success"), ("📂 Check File", "file", "primary")],
+        [("📖 How To", "help", "primary")],
+    ]
+    if is_admin(uid):
+        rows.append([("👑 Owner Panel", "opanel", "success")])
+    return header, rows
 
 def menu_owner():
     ac = bool(STORE.get_setting("auto_check", True)) if STORE else True
@@ -2197,12 +2181,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await reply_menu(msg, mtext, rows)
             return
         elif reply_action == "help":
-            await msg.reply_text(help_text(), parse_mode=ParseMode.HTML, reply_markup=main_reply_kb(is_owner) if _has_access(uid) else None)
+            await msg.reply_text(help_text(), parse_mode=ParseMode.HTML, reply_markup=main_reply_kb(is_owner))
             return
         elif reply_action in ("check", "file"):
-            if not _has_access(uid):
-                await reply_menu(msg, access_denied_html(), [[("🎫 Redeem Access Code", "redeem_flow", "success")]])
-                return
             if reply_action == "check":
                 set_pending(uid, "creds")
                 await msg.reply_text(
@@ -2215,24 +2196,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await msg.reply_text("📂 <b>Check File</b>\n\nSend me a <code>.txt / .log / .json / .csv</code> file.", parse_mode=ParseMode.HTML, reply_markup=_build_reply_kb([["⬅️ Main Menu"]]))
             return
         elif reply_action == "mode":
-            if not _has_access(uid):
-                await reply_menu(msg, access_denied_html(), [[("🎫 Redeem Access Code", "redeem_flow", "success")]])
-                return
             new = not STORE.get_premium_only(uid)
             STORE.set_premium_only(uid, new)
             await msg.reply_text(f"🎛 Output Mode: <b>{'Premium Only' if new else 'All Working'}</b>", parse_mode=ParseMode.HTML, reply_markup=main_reply_kb(is_owner))
             return
         elif reply_action == "myaccess":
-            if is_owner:
-                await msg.reply_text("👑 <b>Owner Access</b>\n\nUnlimited.", parse_mode=ParseMode.HTML, reply_markup=main_reply_kb(True))
-            else:
-                ok, exp = STORE.has_access(uid)
-                await msg.reply_text(f"✅ <b>Access Active</b>\n\n⏳ Expires: <code>{fmt_dt(exp)}</code>", parse_mode=ParseMode.HTML, reply_markup=main_reply_kb(False))
+            await msg.reply_text("✅ <b>Free Access</b>\n\n🎉 This bot is <b>FREE</b> — no code needed!\nJust tap <b>💎 Check Account</b> or <b>📂 Check File</b>.", parse_mode=ParseMode.HTML, reply_markup=main_reply_kb(is_owner))
             return
-        elif reply_action == "redeem_flow":
-            set_pending(uid, "redeem")
-            await msg.reply_text("🔑 <b>Redeem Code</b>\n\nSend me your access code (plain text).", parse_mode=ParseMode.HTML, reply_markup=_build_reply_kb([["⬅️ Main Menu"]]))
-            return
+
         elif reply_action == "opanel":
             if not is_owner:
                 await msg.reply_text("⛔ Owner only.", parse_mode=ParseMode.HTML)
@@ -2334,29 +2305,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if pending:
         kind = pending["kind"]
 
-        if kind == "redeem":
-            clear_pending(uid)
-            if not text:
-                return
-            res = await asyncio.to_thread(STORE.redeem, text, uid)
-            if res in ("invalid", "used", "expired"):
-                label = {
-                    "invalid": "❌ Invalid code.",
-                    "used": "❌ This code has already been used.",
-                    "expired": "❌ This code has expired.",
-                }[res]
-                await reply_menu(msg, label,
-                                 [[("🎫 Try Another", "redeem_flow", "success"),
-                                   ("⬅️ Menu", "menu", "danger")]])
-            else:
-                await reply_menu(msg,
-                    "🎉 <b>Congratulations!</b>\n\n"
-                    "You got access to the <b>Premium Checker</b>\n"
-                    f"⏳ Expires: <code>{fmt_dt(res)}</code>",
-                    [[("💎 Check Account", "check", "primary"), ("📂 Check File", "file", "primary")],
-                     [("⬅️ Menu", "menu", "danger")]])
-            return
-
         if kind == "creds":
             clear_pending(uid)
             creds = extract_credentials(text)
@@ -2449,10 +2397,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     creds = extract_credentials(text)
     if creds:
-        if not _has_access(uid):
-            await reply_menu(msg, access_denied_html(),
-                             [[("🎫 Redeem Access Code", "redeem_flow", "success")]])
-            return
         if len(creds) > MAX_PASTED_CREDS:
             await reply_menu(msg,
                 f"❌ Too many lines (max {MAX_PASTED_CREDS}). Send a file instead.",
@@ -2572,10 +2516,6 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_menu(m, help_text(), [[("⬅️ Back", "menu", "danger")]])
 
     elif data in ("check", "file"):
-        if not _has_access(uid):
-            await edit_menu(m, access_denied_html(),
-                            [[("🎫 Redeem Access Code", "redeem_flow", "success")]])
-            return
         if data == "check":
             set_pending(uid, "creds")
             text = (
@@ -2590,10 +2530,6 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_menu(m, text, [[("⬅️ Back", "menu", "danger")]])
 
     elif data == "mode":
-        if not _has_access(uid):
-            await edit_menu(m, access_denied_html(),
-                            [[("🎫 Redeem Access Code", "redeem_flow", "success")]])
-            return
         new = not STORE.get_premium_only(uid)
         STORE.set_premium_only(uid, new)
         text, rows = menu_main(uid)
@@ -2609,11 +2545,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_menu(m, text,
                         [[("🎛 Output Mode", "mode", "primary"), ("⬅️ Back", "menu", "danger")]])
 
-    elif data == "redeem_flow":
-        set_pending(uid, "redeem")
-        await edit_menu(m,
-            "🔑 <b>Redeem Code</b>\n\nSend me your access code (plain text).",
-            [[("⬅️ Back", "menu", "danger")]])
+
 
     elif data == "opanel":
         if not is_admin(uid, getattr(q.from_user, "username", None)):
