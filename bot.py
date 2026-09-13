@@ -2168,54 +2168,12 @@ def summary_text(res: dict) -> str:
     hits = len(res.get('hits', []))
     free = len(res.get('free', []))
     bad = res.get('bad', 0)
-    rate = res.get('rate', 0)
-    err = res.get('err', 0)
-    twofa = res.get('twofa', 0)
     total = res.get('total', 0)
-    processed = res.get('processed', 0)
     sec = res.get('seconds', '?')
-    cpm = res.get('cpm', 0)
-    elapsed = res.get('elapsed', 0)
-    if not cpm and elapsed:
-        cpm = _fmt_cpm_smooth(processed, elapsed)
-    legacy = (
-        f"📊 Total: <code>{total}</code> | Processed: <code>{processed}</code>\n"
-        f"✅ Hits: <code>{hits}</code> | 🆓 Free: <code>{free}</code> | "
-        f"❌ Bad: <code>{bad}</code>\n"
-        f"⏳ Rate: <code>{rate}</code> | ⚠️ Errors: <code>{err}</code>\n"
-        f"⏱ Time: <code>{sec}s</code> | 🌐 Live Proxies: <code>{proxy_count()}</code>"
-    )
-    extra = f"🔐 2FA: <code>{twofa}</code> | 📈 Avg: <code>{cpm} cpm</code>" if twofa or cpm else ""
-    extra_block = f"{extra}\n" if extra else ""
-    detailed = ""
-    if res.get("hits"):
-        plans = Counter((h.get("data") or {}).get("plan") or "Premium" for h in res.get("hits", []))
-        plan_line = " • ".join(f"{esc(k)}: <code>{v}</code>" for k,v in plans.items())
-        ccs = Counter((h.get("data") or {}).get("country_name") or (h.get("data") or {}).get("cc") or "Unknown" for h in res.get("hits", []))
-        cc_line = " • ".join(f"{esc(k)}: <code>{v}</code>" for k,v in ccs.most_common(3))
-        total2 = res.get("total", 0) or 1
-        rate2 = len(res.get("hits", [])) / total2 * 100
-        detailed = (
-            f"📊 Plans: {plan_line}\n"
-            f"🌍 Countries: {cc_line}\n"
-            f"✅ Success: <code>{rate2:.1f}%</code> • ⏱ Avg: <code>{res.get('cpm',0)} cpm</code>\n"
-        )
-    clean_stats = res.get("clean_stats", {})
-    clean_block = ""
-    if clean_stats:
-        clean_block = f"🧹 Cleaned: <code>{clean_stats.get('cleaned')}</code> Dup: <code>{clean_stats.get('dup')}</code> Invalid: <code>{clean_stats.get('invalid')}</code>\n"
     return (
-        "╭────────────────────────╮\n"
-        "│ ✅ <b>SCAN COMPLETE!</b> │\n"
-        "╰────────────────────────╯\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n"
-        f"{legacy}\n"
-        f"{extra_block}"
-        f"{clean_block}"
-        f"{detailed}"
-        "━━━━━━━━━━━━━━━━━━━━━\n"
-        "🔥 <b>CRUNCHYROLL</b>\n"
-        f"{DEVELOPER_BRANDING}"
+        f"<b>Scan Complete</b>\n\n"
+        f"Total: <code>{total}</code> | Hits: <code>{hits}</code> | Free: <code>{free}</code> | Bad: <code>{bad}</code>\n"
+        f"Time: <code>{sec}s</code> | CPM: <code>{res.get('cpm',0)}</code> | Proxies: <code>{proxy_count()}</code>"
     )
 
 def status_text() -> str:
@@ -2400,25 +2358,19 @@ def menu_main(uid: int, username: str = None):
 
 def menu_owner():
     auto_on = bool(STORE.get_setting("auto_proxy", True)) if STORE else True
-    daily = load_daily_stats()
     header = (
-        "⚙️ <b>Proxy Settings — Auto Load 100x Fast</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📊 Status: <code>{'ON' if proxy_count() else 'OFF'}</code> • 📦 Pool: <code>{pool_size()}</code> • 🌐 Live: <code>{proxy_count()}</code>\n"
-        f"   ↳ Auto: <code>{len(AUTO_PROXY_URLS)}</code> • Manual: <code>{len(MANUAL_PROXY_URLS)}</code> • Scores: <code>{len(PROXY_SCORES)}</code>\n"
-        f"🔄 Auto Load: <code>{'ON' if auto_on else 'OFF'}</code> • 🧵 Threads: <code>{THREADS}</code> (max {MAX_THREADS_USER})\n"
-        f"⚡ Speed: <code>100x Fast</code> • 1:1 Proxy per Account • Retry 2x\n"
-        f"📅 Today: <code>{daily.get('hits',0)} hits / {daily.get('total',0)} scans</code>\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n"
-        "Format: <code>user:pass@ip:port</code> or <code>ip:port</code> or URL\n"
-        "Auto: 12 sources • Manual: text/file/URL"
+        f"<b>Proxy Settings</b>\n\n"
+        f"Status: <code>{'ON' if proxy_count() else 'OFF'}</code> | Live: <code>{proxy_count()}</code> | Pool: <code>{pool_size()}</code>\n"
+        f"Auto: <code>{len(AUTO_PROXY_URLS)}</code> | Manual: <code>{len(MANUAL_PROXY_URLS)}</code>\n"
+        f"Auto Load: <code>{'ON' if auto_on else 'OFF'}</code> | Threads: <code>{THREADS}</code>\n\n"
+        f"Format: <code>user:pass@ip:port</code> or <code>ip:port</code>"
     )
     rows = [
-        [("🔄 Refresh Auto", "refresh", "primary"), ("📥 Upload Proxies", "addpx", "success")],
-        [("🌐 Import URL", "importurl", "primary"), ("📊 Proxy Stats", "proxystats", "primary")],
-        [("❌ Disable Proxies", "disableproxies", "danger"), ("🧹 Clear Proxies", "clearpool", "danger")],
-        [("🔄 Auto Load: ON" if auto_on else "⏸️ Auto Load: OFF", "autoproxy", "primary"), ("🧵 Set Threads", "setthreads", "primary")],
-        [("⬅️ Back", "menu", "danger")],
+        [("Refresh", "refresh", "primary"), ("Upload Proxies", "addpx", "success")],
+        [("Import URL", "importurl", "primary"), ("Stats", "proxystats", "primary")],
+        [("Disable", "disableproxies", "danger"), ("Clear", "clearpool", "danger")],
+        [("Auto ON" if auto_on else "Auto OFF", "autoproxy", "primary"), ("Set Threads", "setthreads", "primary")],
+        [("Back", "menu", "danger")],
     ]
     return header, rows
 
@@ -2532,16 +2484,19 @@ async def _run_and_report(msg, uid: int, text: str):
     line_count = max(1, text.count("\n") + 1)
     creds_preview = len(extract_credentials(text))
     init_card = (
-        f"╭────────────────────────╮\n"
-        f"│ 📈 <b>CRUNCHYROLL — LIVE</b> │\n"
-        f"╰────────────────────────╯\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📄 Lines: <code>{line_count}</code> • 🎯 Combos: <code>{creds_preview}</code> • 🧹 Clean: <code>{clean_preview.get('cleaned',0)}</code> Dup: <code>{clean_preview.get('dup',0)}</code>\n"
-        f"⏳ Crunchyroll 0% [░░░░░░░░░░░░░░░░░░░░] (0/{creds_preview})\n"
-        f"⭐ Hits: <code>0</code> | 🆓 Free: <code>0</code> | 🔐 2FA: <code>0</code> | ❌ Bad: <code>0</code> | ⚠️ Errors: <code>0</code>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📈 <code>0 cpm</code>  🕒 <code>0m 0s</code>  ⏳ ETA <code>—</code> | 🧵 <code>{THREADS}</code>\n"
-        f"📡 <b>Live feed:</b> • <i>starting…</i>"
+        f"📊 <b>CRUNCHYROLL Scan — Live</b>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"░" * 18 + f" 0%\n\n"
+        f"✅ Checked: <code>0/{creds_preview}</code>\n"
+        f"🔄 In flight: <code>{THREADS}</code>\n"
+        f"⭐ Hits: <code>0</code>   🆓 Free: <code>0</code>\n"
+        f"⚠️ 2FA: <code>0</code>   ❌ Bad: <code>0</code>\n"
+        f"⚠️ Errors: <code>0</code>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"📊 <code>0 cpm</code>   ⏳ <code>0m 0s</code>   ETA <code>—</code>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"📊 Live feed:\n"
+        f"• starting..."
     )
     stop_kb = _build_kb([[("🛑 Stop", "stopcheck", "danger"), ("⏸️ Pause", "pausecheck", "primary")]])
     note = await msg.reply_text(init_card, parse_mode=ParseMode.HTML, reply_markup=stop_kb)
@@ -2773,15 +2728,10 @@ async def cmd_any(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not is_admin(user.id, getattr(user, "username", None)):
                 await reply_menu(msg, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
                 return
-            busy = False
             with USER_LOCK:
-                if USER_LAST_CHECK.get(f"busy_{user.id}"):
-                    busy = True
-                    STOP_REQUEST[user.id] = True
-            if busy:
-                await reply_menu(msg, "🛑 <b>Stopping...</b>\n<i>Current scan will stop in a moment</i>", [[("🛑 Stop Again", "stopcheck", "danger"), ("⬅️ Menu", "menu", "danger")]])
-            else:
-                await reply_menu(msg, "ℹ️ No active check running.", [[("⬅️ Back", "menu", "danger")]])
+                STOP_REQUEST[user.id] = True
+                PAUSE_REQUEST.pop(user.id, None)
+            await reply_menu(msg, "🛑 Stopping... Current scan will stop.", [[("Stop Again", "stopcheck", "danger"), ("Menu", "menu", "danger")]])
             return
         if txt_lower in ("/pause", "/pausecheck"):
             if not is_admin(uid, getattr(user, "username", None)):
@@ -3457,51 +3407,48 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not is_admin(uid, uname_btn):
                 try:
                     await q.answer("❌ Admin only", show_alert=True)
-                except Exception:
+                except:
                     pass
                 return
-            busy = False
+            # FIX: Stop should work even if busy flag not set - always set STOP_REQUEST
             with USER_LOCK:
-                if USER_LAST_CHECK.get(f"busy_{uid}"):
-                    busy = True
-                    STOP_REQUEST[uid] = True
-                    PAUSE_REQUEST.pop(uid, None)
-            if busy:
-                try:
-                    await q.answer("🛑 Stopping check...", show_alert=False)
-                except Exception:
-                    pass
-                try:
-                    await m.edit_text("🛑 <b>Stopping...</b>\n<i>Cancelling current scan — please wait</i>", parse_mode=ParseMode.HTML)
-                except Exception:
-                    pass
-            else:
-                try:
-                    await q.answer("No active check", show_alert=False)
-                except Exception:
-                    pass
-                await edit_menu(m, "ℹ️ No active check running.", [[("⬅️ Back", "menu", "danger")]])
+                STOP_REQUEST[uid] = True
+                PAUSE_REQUEST.pop(uid, None)
+                busy = bool(USER_LAST_CHECK.get(f"busy_{uid}"))
+            try:
+                await q.answer("🛑 Stopping...", show_alert=False)
+            except:
+                pass
+            try:
+                await m.edit_text("🛑 <b>Stopping...</b>\nCancelling scan...", parse_mode=ParseMode.HTML)
+            except:
+                pass
+            if not busy:
+                await edit_menu(m, "🛑 Stopped - No active check was running.", [[("Back", "menu", "danger")]])
             return
 
         if data == "pausecheck":
             if not is_admin(uid, uname_btn):
                 return
             with USER_LOCK:
-                if USER_LAST_CHECK.get(f"busy_{uid}"):
-                    PAUSE_REQUEST[uid] = True
-                    await edit_menu(m, "⏸️ <b>Pausing...</b>\n<i>Check will pause after current batch</i>\n\n▶️ Resume or 🛑 Stop", [[("▶️ Resume", "resumecheck", "success"), ("🛑 Stop", "stopcheck", "danger")]])
-                else:
-                    await edit_menu(m, "ℹ️ No active check to pause.", [[("⬅️ Back", "menu", "danger")]])
+                PAUSE_REQUEST[uid] = True
+            try:
+                await q.answer("⏸️ Pausing...", show_alert=False)
+            except:
+                pass
+            await edit_menu(m, "⏸️ Paused - Check will pause after current batch\n\nResume or Stop", [[("Resume", "resumecheck", "success"), ("Stop", "stopcheck", "danger")]])
             return
 
         if data == "resumecheck":
             if not is_admin(uid, uname_btn):
                 return
-            if PAUSE_REQUEST.get(uid):
+            with USER_LOCK:
                 PAUSE_REQUEST.pop(uid, None)
-                await edit_menu(m, "▶️ <b>Resumed</b> — check continuing...", [[("🛑 Stop", "stopcheck", "danger")]])
-            else:
-                await edit_menu(m, "ℹ️ No paused check.", [[("⬅️ Back", "menu", "danger")]])
+            try:
+                await q.answer("▶️ Resumed", show_alert=False)
+            except:
+                pass
+            await edit_menu(m, "▶️ Resumed - check continuing...", [[("Stop", "stopcheck", "danger"), ("Pause", "pausecheck", "primary")]])
             return
 
         if data == "menu":
