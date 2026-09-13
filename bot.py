@@ -155,6 +155,17 @@ def is_admin(uid: int, username: str = None) -> bool:
         un = str(username).lstrip("@").lower()
         if un in ADMIN_USERNAMES:
             return True
+    # Dynamic admins via bot (owner adds)
+    try:
+        if STORE and hasattr(STORE, 'get_setting'):
+            dyn_ids = STORE.get_setting("admin_ids", []) or []
+            if uid in dyn_ids:
+                return True
+            dyn_uns = STORE.get_setting("admin_usernames", []) or []
+            if username and str(username).lstrip("@").lower() in [x.lower() for x in dyn_uns]:
+                return True
+    except Exception:
+        pass
     return False
 
 DATA_DIR = Path("data")
@@ -1439,6 +1450,46 @@ class Store:
     def get_setting(self, key, default=None):
         with self.lock:
             return self.settings.get(key, default)
+    def get_admins(self):
+        with self.lock:
+            return list(self.settings.get("admin_ids", []) or [])
+    def add_admin(self, uid: int, username: str = None) -> bool:
+        with self.lock:
+            ids = list(self.settings.get("admin_ids", []) or [])
+            uns = list(self.settings.get("admin_usernames", []) or [])
+            if uid and uid not in ids and uid != OWNER_ID:
+                ids.append(uid)
+                self.settings["admin_ids"] = ids
+                if username:
+                    uns.append(str(username).lstrip("@"))
+                    self.settings["admin_usernames"] = uns
+                self.save()
+                return True
+            elif username and username.lstrip("@").lower() not in [x.lower() for x in uns]:
+                uns.append(str(username).lstrip("@"))
+                self.settings["admin_usernames"] = uns
+                self.save()
+                return True
+            return False
+    def remove_admin(self, uid: int = None, username: str = None) -> bool:
+        with self.lock:
+            ids = list(self.settings.get("admin_ids", []) or [])
+            uns = list(self.settings.get("admin_usernames", []) or [])
+            changed = False
+            if uid and uid in ids:
+                ids.remove(uid)
+                self.settings["admin_ids"] = ids
+                changed = True
+            if username:
+                un = str(username).lstrip("@").lower()
+                for x in list(uns):
+                    if x.lower() == un:
+                        uns.remove(x)
+                        changed = True
+                self.settings["admin_usernames"] = uns
+            if changed:
+                self.save()
+            return changed
 
     def set_setting(self, key, value):
         with self.lock:
@@ -1913,8 +1964,8 @@ def clear_pending(uid: int):
         PENDING.pop(uid, None)
 
 def _has_access(uid: int) -> bool:
-    # FREE MODE — no subscription, everyone has access
-    return True
+    # Owner + admins only
+    return is_admin(uid)
 
 def _is_owner(uid: int, username: str = None) -> bool:
     return is_admin(uid, username)
@@ -1937,6 +1988,8 @@ def menu_main(uid: int):
         [("📖 How To Use", "help", "primary"), ("📊 Bot Stats", "status", "primary")],
         [("⚙️ Proxy Settings", "proxysettings", "primary")],
     ]
+    if is_admin(uid):
+        rows.append([("👥 Admins", "admins", "primary")])
     return header, rows
 
 def menu_owner():
@@ -2162,6 +2215,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     uid = user.id
     name = getattr(user, "first_name", None) or getattr(user, "username", None) or str(uid)
+    if not is_admin(uid, getattr(user, "username", None)):
+        await reply_menu(msg, f"❌ <b>Access Denied</b>\n\nThis bot is <b>Owner + Admins only</b>.\nContact owner: <code>{OWNER_USERNAME}</code>", [[("⬅️ Back", "menu", "danger")]])
+        return
     # Single path — no double message, board completely removed
     try:
         text = welcome_premium_text(uid, name)
@@ -2205,16 +2261,81 @@ async def cmd_any(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply_menu(msg, help_text(), [[("⬅️ Back", "menu", "danger")]])
         return
     if txt in ("/proxy", "/proxies", "/proxyinfo", "/pool"):
+        if not is_admin(user.id, getattr(user, "username", None)):
+            await reply_menu(msg, "❌ <b>Admin Only</b>\nOnly owner/admins can use this bot.", [[("⬅️ Back", "menu", "danger")]])
+            return
         ptext, rows = menu_owner()
         await reply_menu(msg, ptext, rows)
         return
     if txt in ("/addproxy", "/addproxies", "/uploadproxy"):
+        if not is_admin(user.id, getattr(user, "username", None)):
+            await reply_menu(msg, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
+            return
         set_pending(user.id, "addpx")
         await reply_menu(msg, "📥 <b>Upload Proxies</b>\n\nPaste <code>user:pass@ip:port</code> or <code>ip:port</code> lines, or send a <code>.txt</code> file.\nAuto-detect + auto-check.", [[("⬅️ Back", "proxysettings", "danger")]])
         return
     if txt in ("/clearproxy", "/clearproxies"):
+        if not is_admin(user.id, getattr(user, "username", None)):
+            await reply_menu(msg, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
+            return
         await asyncio.to_thread(clear_pool)
         await reply_menu(msg, "🧹 <b>Proxies Cleared</b>\nPool & live reset.", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Menu", "menu", "danger")]])
+        return
+    if txt.startswith("/addadmin"):
+        if user.id != OWNER_ID and user.id not in ADMIN_IDS:
+            await reply_menu(msg, "❌ <b>Owner Only</b> — only owner can add admins.", [[("⬅️ Back", "menu", "danger")]])
+            return
+        parts = txt.split()
+        if len(parts) < 2 and msg.reply_to_message and msg.reply_to_message.from_user:
+            target = msg.reply_to_message.from_user
+            ok = STORE.add_admin(target.id, getattr(target, "username", None))
+            await reply_menu(msg, f"{'✅ Added' if ok else 'ℹ️ Already'} admin: <code>{target.id}</code> @{getattr(target,'username','')}", [[("👥 Admins", "admins", "primary"), ("⬅️ Back", "menu", "danger")]])
+            return
+        if len(parts) < 2:
+            await reply_menu(msg, "👑 <b>Add Admin</b>\n\nUse: <code>/addadmin 123456789</code> or <code>/addadmin @username</code>\nOr reply to a user with /addadmin", [[("⬅️ Back", "menu", "danger")]])
+            return
+        arg = parts[1].lstrip("@")
+        try:
+            if arg.isdigit():
+                ok = STORE.add_admin(int(arg))
+                await reply_menu(msg, f"{'✅ Added' if ok else 'ℹ️ Already'} admin: <code>{arg}</code>", [[("👥 Admins", "admins", "primary"), ("⬅️ Back", "menu", "danger")]])
+            else:
+                ok = STORE.add_admin(0, arg)
+                await reply_menu(msg, f"{'✅ Added' if ok else 'ℹ️ Already'} admin: @{arg}", [[("👥 Admins", "admins", "primary"), ("⬅️ Back", "menu", "danger")]])
+        except Exception as e:
+            await reply_menu(msg, f"❌ Error: <code>{e}</code>", [[("⬅️ Back", "menu", "danger")]])
+        return
+    if txt.startswith("/removeadmin") or txt.startswith("/deladmin"):
+        if user.id != OWNER_ID and user.id not in ADMIN_IDS:
+            await reply_menu(msg, "❌ <b>Owner Only</b>", [[("⬅️ Back", "menu", "danger")]])
+            return
+        parts = txt.split()
+        if len(parts) < 2:
+            await reply_menu(msg, "👑 <b>Remove Admin</b>\nUse: <code>/removeadmin 123456</code> or <code>/removeadmin @username</code>", [[("⬅️ Back", "menu", "danger")]])
+            return
+        arg = parts[1].lstrip("@")
+        try:
+            if arg.isdigit():
+                ok = STORE.remove_admin(int(arg))
+            else:
+                ok = STORE.remove_admin(None, arg)
+            await reply_menu(msg, f"{'✅ Removed' if ok else '❌ Not found'}: <code>{arg}</code>", [[("👥 Admins", "admins", "primary"), ("⬅️ Back", "menu", "danger")]])
+        except Exception as e:
+            await reply_menu(msg, f"❌ Error: <code>{e}</code>", [[("⬅️ Back", "menu", "danger")]])
+        return
+    if txt in ("/admins", "/adminlist"):
+        admins = STORE.get_admins() if STORE else []
+        admins_u = STORE.get_setting("admin_usernames", []) if STORE else []
+        txt2 = "👥 <b>Admins</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
+        txt2 += f"👑 Owner: <code>{OWNER_ID}</code> @{OWNER_USERNAME.lstrip('@')}\n"
+        for a in admins:
+            txt2 += f"• <code>{a}</code>\n"
+        for u in admins_u:
+            txt2 += f"• @{u}\n"
+        if not admins and not admins_u:
+            txt2 += "<i>No extra admins</i>\n"
+        txt2 += "\n<i>Owner can /addadmin or /removeadmin</i>"
+        await reply_menu(msg, txt2, [[("⬅️ Back", "menu", "danger")]])
         return
     if txt in ("/threads", "/setthreads"):
         await reply_menu(msg, f"🧵 <b>Set Threads</b>\nCurrent: <code>{THREADS}</code> • Max 300", [[("🧵 50", "threads_50", "primary"), ("🧵 100", "threads_100", "success")], [("🧵 200", "threads_200", "primary"), ("🧵 300", "threads_300", "success")], [("⬅️ Back", "proxysettings", "danger")]])
@@ -2230,6 +2351,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     uid = user.id
     text = msg.text.strip()
+    if not is_admin(uid, getattr(user, "username", None)):
+        await reply_menu(msg, f"❌ <b>Access Denied</b>\nOwner/Admins only.", [[("⬅️ Back", "menu", "danger")]])
+        return
     # Compat: if user still has old reply board cached, map its text to inline actions (single message)
     _compat_map = {
         "💎 Check Account": "check", "📂 Check File": "file",
@@ -2345,6 +2469,9 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user or not msg or not msg.document:
         return
     uid = user.id
+    if not is_admin(uid, getattr(user, "username", None)):
+        await reply_menu(msg, f"❌ <b>Access Denied</b>\nOwner/Admins only.", [[("⬅️ Back", "menu", "danger")]])
+        return
     pending = get_pending(uid)
 
     # Auto-detect file type if no pending or stale pending — proxy vs combo
@@ -2462,10 +2589,16 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_menu(m, help_text(), [[("⬅️ Back", "menu", "danger")]])
         return
     elif data == "check":
+        if not is_admin(uid, getattr(user, "username", None)):
+            await edit_menu(m, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
+            return
         set_pending(uid, "creds")
         await edit_menu(m, "💎 <b>Check Account</b>\n\nSend <code>EMAIL:PASS</code> — one or many lines.\nExample: <code>user@gmail.com:pass123</code>", [[("⬅️ Back", "menu", "danger")]])
         return
     elif data == "file":
+        if not is_admin(uid, getattr(user, "username", None)):
+            await edit_menu(m, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
+            return
         clear_pending(uid)
         set_pending(uid, "file")
         await edit_menu(m, "📂 <b>Check File</b>\n\nSend me your file.", [[("⬅️ Back", "menu", "danger")]])
@@ -2543,6 +2676,17 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await edit_menu(m, f"✅ <b>Auto Proxies Ready:</b> <code>{proxy_count()}</code> live from auto-fetch\n📦 Pool: <code>{pool_size()}</code>", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Back", "menu", "danger")]])
         except Exception as e:
             await edit_menu(m, f"❌ Error: <code>{esc(str(e)[:120])}</code>", [[("⬅️ Back", "proxysettings", "danger")]])
+        return
+    elif data == "admins":
+        admins = STORE.get_admins() if STORE else []
+        admins_u = STORE.get_setting("admin_usernames", []) if STORE else []
+        txt2 = "👥 <b>Admins</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
+        txt2 += f"👑 Owner: <code>{OWNER_ID}</code>\n"
+        for a in admins:
+            txt2 += f"• <code>{a}</code>\n"
+        for u in admins_u:
+            txt2 += f"• @{u}\n"
+        await edit_menu(m, txt2, [[("⬅️ Back", "menu", "danger")]])
         return
     elif data in ("genpick", "gen_24", "gen_48", "gen_72", "autocheck", "oxaam", "tv"):
         await edit_menu(m, "ℹ️ <b>Just a Checker</b> — that feature was removed.\nUse <b>💎 Check Account</b> / <b>📂 Check File</b>.", [[("⬅️ Back", "menu", "danger")]])
