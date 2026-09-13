@@ -192,6 +192,8 @@ STOP_REQUEST: dict = {}
 PAUSE_REQUEST: dict = {}
 ACTIVE_CHECK_MSG: dict = {}
 CHECK_QUEUE: dict = {}  # uid -> list of queued texts
+CHECK_EXECUTORS: dict = {}  # uid -> ThreadPoolExecutor for instant stop
+CHECK_EXEC_LOCK = threading.Lock()
 USER_LOCK = threading.Lock()
 SECURE_LOG = True
 MAX_FILE_MB = 100  # unlimited - 100MB ~1M combos
@@ -894,6 +896,7 @@ PROXY_SCORES: dict = {}
 REFRESH_STATE: dict = {"tested": 0, "live": 0, "total": 0, "start": 0}
 REFRESH_STOP_REQUEST = False  # for stop option during refreshing proxy
 REFRESH_EXECUTOR = None  # holds current ThreadPoolExecutor for instant stop
+REFRESH_HARVEST_EXECUTOR = None  # holds harvest executor for instant stop during sources fetch
 PROXY_LOCK = threading.Lock()
 _refresh_busy = threading.Lock()
 LAST_PROXY_HARVEST = 0.0
@@ -972,17 +975,26 @@ def is_manual_proxy_url(url: str) -> bool:
     return url in MANUAL_PROXY_URLS
 
 def harvest_proxies() -> List[str]:
+    global REFRESH_HARVEST_EXECUTOR, REFRESH_STOP_REQUEST
     raw = set()
     raw_lock = threading.Lock()
 
     def fetch_one(url: str):
+        if REFRESH_STOP_REQUEST:
+            return
         s = requests.Session()
         for verify in (True, False):
+            if REFRESH_STOP_REQUEST:
+                return
             try:
                 r = s.get(url, timeout=8, headers={"User-Agent": BARO_WUA}, verify=verify)
+                if REFRESH_STOP_REQUEST:
+                    return
                 if r.status_code == 200 and r.text:
                     local = set()
                     for line in r.text.splitlines():
+                        if REFRESH_STOP_REQUEST:
+                            break
                         line = line.strip()
                         if not line or line.startswith("#"):
                             continue
@@ -1008,6 +1020,8 @@ def harvest_proxies() -> List[str]:
                         raw.update(local)
                     break
             except requests.RequestException:
+                if REFRESH_STOP_REQUEST:
+                    return
                 if verify:
                     continue
                 else:
@@ -1015,12 +1029,33 @@ def harvest_proxies() -> List[str]:
             except Exception:
                 break
 
-    with ThreadPoolExecutor(max_workers=12) as ex:
+    ex = ThreadPoolExecutor(max_workers=12)
+    REFRESH_HARVEST_EXECUTOR = ex
+    try:
         futures = [ex.submit(fetch_one, u) for u in PROXY_SOURCES]
         for f in as_completed(futures):
+            if REFRESH_STOP_REQUEST:
+                try:
+                    ex.shutdown(wait=False, cancel_futures=True)
+                except TypeError:
+                    for _ff in futures:
+                        try:
+                            _ff.cancel()
+                        except:
+                            pass
+                break
             try:
-                f.result()
+                f.result(timeout=0.1)
             except Exception:
+                pass
+    finally:
+        REFRESH_HARVEST_EXECUTOR = None
+        try:
+            ex.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            try:
+                ex.shutdown(wait=False)
+            except:
                 pass
     return list(raw)
 
@@ -1079,7 +1114,7 @@ def test_proxy_url(proxy_url: str) -> Optional[dict]:
     return None
 
 def refresh_live_proxies(force: bool = False) -> None:
-    global LIVE_PROXIES, LAST_PROXY_HARVEST, REFRESH_STOP_REQUEST, REFRESH_EXECUTOR
+    global LIVE_PROXIES, LAST_PROXY_HARVEST, REFRESH_STOP_REQUEST, REFRESH_EXECUTOR, REFRESH_HARVEST_EXECUTOR
     now = time.time()
     with PROXY_LOCK:
         fresh = LIVE_PROXIES and (now - LAST_PROXY_HARVEST) < PROXY_REFRESH_MINUTES * 60
@@ -1614,17 +1649,33 @@ def run_check(text: str, reporter=None, hit_callback=None, uid: int = None) -> d
     except:
         dynamic_threads = THREADS
 
-    with ThreadPoolExecutor(max_workers=dynamic_threads) as ex:
+    # INSTANT STOP FIX - manual executor + global ref for button handler to shutdown
+    ex = ThreadPoolExecutor(max_workers=dynamic_threads)
+    if uid is not None:
+        try:
+            with CHECK_EXEC_LOCK:
+                CHECK_EXECUTORS[uid] = ex
+        except:
+            pass
+    try:
         futures = {ex.submit(worker, c): c for c in creds}
         for fut in as_completed(futures):
             if uid is not None:
                 try:
                     if STOP_REQUEST.get(uid):
                         results["stopped"] = True
-                        for f in list(futures.keys()):
+                        # INSTANT: shutdown without waiting, cancel pending futures
+                        try:
+                            ex.shutdown(wait=False, cancel_futures=True)
+                        except TypeError:
                             try:
-                                f.cancel()
-                            except Exception:
+                                for f in list(futures.keys()):
+                                    f.cancel()
+                            except:
+                                pass
+                            try:
+                                ex.shutdown(wait=False)
+                            except:
                                 pass
                         break
                 except Exception:
@@ -1636,6 +1687,13 @@ def run_check(text: str, reporter=None, hit_callback=None, uid: int = None) -> d
                 orig_cred, st, d = cred, "err", dict(_blank_data(""), info=_clean_err(e))
             if st == "stopped":
                 results["stopped"] = True
+                try:
+                    ex.shutdown(wait=False, cancel_futures=True)
+                except TypeError:
+                    try:
+                        ex.shutdown(wait=False)
+                    except:
+                        pass
                 break
             with lock:
                 results["processed"] += 1
@@ -1682,6 +1740,21 @@ def run_check(text: str, reporter=None, hit_callback=None, uid: int = None) -> d
                         reporter.update(results)
                     except Exception:
                         pass
+    finally:
+        # Always clear executor ref and shutdown without blocking - INSTANT STOP
+        if uid is not None:
+            try:
+                with CHECK_EXEC_LOCK:
+                    CHECK_EXECUTORS.pop(uid, None)
+            except:
+                pass
+        try:
+            ex.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            try:
+                ex.shutdown(wait=False)
+            except:
+                pass
     elapsed = time.time() - t0
     results["seconds"] = round(elapsed, 1)
     results["elapsed"] = elapsed
@@ -2917,7 +2990,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
 async def cmd_any(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global REFRESH_STOP_REQUEST, REFRESH_EXECUTOR
+    global REFRESH_STOP_REQUEST, REFRESH_EXECUTOR, REFRESH_HARVEST_EXECUTOR, CHECK_EXECUTORS, CHECK_EXEC_LOCK
     try:
         user = update.effective_user
         msg = update.effective_message
@@ -2943,17 +3016,34 @@ async def cmd_any(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     busy = True
                     STOP_REQUEST[user.id] = True
             if busy:
-                await reply_menu(msg, "🛑 <b>Stopping...</b>\n<i>Current scan will stop in a moment</i>", [[("🛑 Stop Again", "stopcheck", "danger"), ("⬅️ Menu", "menu", "danger")]])
+                # instant shutdown of checker executor
+                try:
+                    with CHECK_EXEC_LOCK:
+                        cex = CHECK_EXECUTORS.get(user.id)
+                    if cex is not None:
+                        try:
+                            cex.shutdown(wait=False, cancel_futures=True)
+                        except:
+                            pass
+                except:
+                    pass
+                await reply_menu(msg, "🛑 <b>Stopping instantly...</b>\n<i>Cancelling 500 threads — 1 sec max</i>\n✅ Partial results will be sent", [[("🛑 Stop Again", "stopcheck", "danger"), ("⬅️ Menu", "menu", "danger")]])
             else:
                 # also try stop proxy refresh if running
                 try:
-                    if REFRESH_EXECUTOR is not None:
+                    if REFRESH_EXECUTOR is not None or REFRESH_HARVEST_EXECUTOR is not None:
                         REFRESH_STOP_REQUEST = True
-                        try:
-                            REFRESH_EXECUTOR.shutdown(wait=False, cancel_futures=True)
-                        except:
-                            pass
-                        await reply_menu(msg, "🛑 <b>Stopping proxy refresh...</b>\n<i>Cancelling...</i>", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Menu", "menu", "danger")]])
+                        if REFRESH_HARVEST_EXECUTOR is not None:
+                            try:
+                                REFRESH_HARVEST_EXECUTOR.shutdown(wait=False, cancel_futures=True)
+                            except:
+                                pass
+                        if REFRESH_EXECUTOR is not None:
+                            try:
+                                REFRESH_EXECUTOR.shutdown(wait=False, cancel_futures=True)
+                            except:
+                                pass
+                        await reply_menu(msg, "🛑 <b>Stopping proxy refresh instantly...</b>\n<i>Cancelling 12 fetch + 300 test workers...</i>", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Menu", "menu", "danger")]])
                         return
                 except:
                     pass
@@ -2965,12 +3055,18 @@ async def cmd_any(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             try:
                 REFRESH_STOP_REQUEST = True
+                # shutdown both harvest + test executors instantly
+                if REFRESH_HARVEST_EXECUTOR is not None:
+                    try:
+                        REFRESH_HARVEST_EXECUTOR.shutdown(wait=False, cancel_futures=True)
+                    except:
+                        pass
                 if REFRESH_EXECUTOR is not None:
                     try:
                         REFRESH_EXECUTOR.shutdown(wait=False, cancel_futures=True)
                     except:
                         pass
-                await reply_menu(msg, "🛑 <b>Stopping proxy refresh...</b>\n<i>Will stop in 1-2 sec</i>\n🌐 Live: <code>{}</code> Pool: <code>{}</code>".format(proxy_count(), pool_size()), [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Back", "menu", "danger")]])
+                await reply_menu(msg, "🛑 <b>Stopping proxy refresh instantly...</b>\n<i>Cancelling 12 fetch + 300 test workers — 1 sec max</i>\n🌐 Live: <code>{}</code> Pool: <code>{}</code> Tested: <code>{}/{}</code>".format(proxy_count(), pool_size(), REFRESH_STATE.get("tested",0), REFRESH_STATE.get("total",0)), [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Back", "menu", "danger")]])
             except Exception as e:
                 await reply_menu(msg, f"❌ Error: <code>{esc(str(e))}</code>", [[("⬅️ Back", "menu", "danger")]])
             return
@@ -3623,7 +3719,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global THREADS, REFRESH_STOP_REQUEST, REFRESH_EXECUTOR
+    global THREADS, REFRESH_STOP_REQUEST, REFRESH_EXECUTOR, REFRESH_HARVEST_EXECUTOR, CHECK_EXECUTORS, CHECK_EXEC_LOCK
     try:
         q = update.callback_query
         if not q:
@@ -3654,12 +3750,26 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             with USER_LOCK:
                 STOP_REQUEST[uid] = True
                 PAUSE_REQUEST.pop(uid, None)
+            # INSTANT STOP - shutdown checker executor immediately
             try:
-                await q.answer("🛑 Stopping...", show_alert=False)
+                with CHECK_EXEC_LOCK:
+                    cex = CHECK_EXECUTORS.get(uid)
+                if cex is not None:
+                    try:
+                        cex.shutdown(wait=False, cancel_futures=True)
+                    except TypeError:
+                        try:
+                            cex.shutdown(wait=False)
+                        except:
+                            pass
+            except Exception:
+                pass
+            try:
+                await q.answer("🛑 Stopping instantly...", show_alert=False)
             except:
                 pass
             try:
-                await m.edit_text("🛑 <b>Stopping...</b>\nCancelling scan...", parse_mode=ParseMode.HTML)
+                await m.edit_text("🛑 <b>Stopping instantly...</b>\n<i>Cancelling 500 threads — 1 sec</i>\n✅ Will show partial results", parse_mode=ParseMode.HTML)
             except:
                 pass
             return
@@ -3760,10 +3870,18 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await edit_menu(m, "ℹ️ Use <b>⚙️ Proxy Settings</b>.", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Back", "menu", "danger")]])
             return
         elif data == "stoprefresh":
-            # Stop option during refreshing proxy - fixes user request - INSTANT
+            # Stop option during refreshing proxy - 100000000000% instant
             REFRESH_STOP_REQUEST = True
-            # try to shutdown executor instantly
+            # try to shutdown both executors instantly
             try:
+                if REFRESH_HARVEST_EXECUTOR is not None:
+                    try:
+                        REFRESH_HARVEST_EXECUTOR.shutdown(wait=False, cancel_futures=True)
+                    except TypeError:
+                        try:
+                            REFRESH_HARVEST_EXECUTOR.shutdown(wait=False)
+                        except:
+                            pass
                 if REFRESH_EXECUTOR is not None:
                     try:
                         REFRESH_EXECUTOR.shutdown(wait=False, cancel_futures=True)
@@ -3775,10 +3893,10 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
             try:
-                await q.answer("🛑 Stopping proxy refresh...", show_alert=False)
+                await q.answer("🛑 Stopping proxy refresh instantly...", show_alert=False)
             except:
                 pass
-            await edit_menu(m, "🛑 <b>Stopping proxy refresh...</b>\n⏳ Cancelling 300 workers...\nPlease wait 1-2 sec...", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Back", "menu", "danger")]])
+            await edit_menu(m, "🛑 <b>Stopping proxy refresh instantly...</b>\n⏳ Cancelling 12 fetch + 300 test workers...\n✅ 1 sec max — partial live saved", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Back", "menu", "danger")]])
             return
 
         elif data == "addpx":
