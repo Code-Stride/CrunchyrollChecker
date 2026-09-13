@@ -1926,10 +1926,10 @@ def _premium_icon(label: str) -> str | None:
 # BlazeNXT ribbon brand
 BLAZENXT_RIBBON = ""
 BLAZENXT_BRAND = "<b>BlazeNXT</b>"
-DEVELOPER_BRANDING = 'Developed by : <a href="tg://user?id=8708907310">BlazeNXT</a>'  # deeplink
+DEVELOPER_BRANDING = 'Developed by : <a href="tg://user?id=8708907310">BlazeNXT</a>'  # deeplink — tap button below 👇
 
 def _build_kb(rows) -> InlineKeyboardMarkup:
-    """rows: list of rows; each row = list of (label, cb) or (label, cb, style)."""
+    """rows: list of rows; each row = list of (label, cb) or (label, cb, style). Supports url buttons (tg://, https://)."""
     use_style = _CAPS["style"] is not False
     data = []
     for row in rows or []:
@@ -1943,7 +1943,11 @@ def _build_kb(rows) -> InlineKeyboardMarkup:
             kwargs = {}
             if style and use_style and style in ("primary","success","danger"):
                 kwargs["style"] = style
-            line.append(InlineKeyboardButton(label, callback_data=cb, **kwargs))
+            # url button support — if cb is url, use url param
+            if cb and isinstance(cb, str) and (cb.startswith("tg://") or cb.startswith("https://") or cb.startswith("http://")):
+                line.append(InlineKeyboardButton(label, url=cb, **kwargs))
+            else:
+                line.append(InlineKeyboardButton(label, callback_data=cb, **kwargs))
         if line:
             data.append(line)
     return InlineKeyboardMarkup(data)
@@ -2042,6 +2046,7 @@ def menu_main(uid: int):
         [("💎 Check Account", "check", "success"), ("📂 Check File", "file", "primary")],
         [("📖 How To Use", "help", "primary"), ("📊 Bot Stats", "status", "primary")],
         [("⚙️ Proxy Settings", "proxysettings", "primary")],
+        [("👨‍💻 Developer — BlazeNXT", "tg://user?id=8708907310", "primary")],
     ]
     if uid == OWNER_ID:
         rows.append([("👥 Admins", "admins", "primary")])
