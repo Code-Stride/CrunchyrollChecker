@@ -2073,6 +2073,25 @@ async def cmd_any(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     if not user or not msg:
         return
+    txt = (msg.text or "").strip().lower()
+    if txt in ("/cmds", "/commands", "/help"):
+        await reply_menu(msg, help_text(), [[("⬅️ Back", "menu", "danger")]])
+        return
+    if txt in ("/proxy", "/proxies", "/proxyinfo", "/pool"):
+        ptext, rows = menu_owner()
+        await reply_menu(msg, ptext, rows)
+        return
+    if txt in ("/addproxy", "/addproxies", "/uploadproxy"):
+        set_pending(user.id, "addpx")
+        await reply_menu(msg, "📥 <b>Upload Proxies</b>\n\nPaste <code>user:pass@ip:port</code> or <code>ip:port</code> lines, or send a <code>.txt</code> file.\nAuto-detect + auto-check.", [[("⬅️ Back", "proxysettings", "danger")]])
+        return
+    if txt in ("/clearproxy", "/clearproxies"):
+        await asyncio.to_thread(clear_pool)
+        await reply_menu(msg, "🧹 <b>Proxies Cleared</b>\nPool & live reset.", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Menu", "menu", "danger")]])
+        return
+    if txt in ("/threads", "/setthreads"):
+        await reply_menu(msg, f"🧵 <b>Set Threads</b>\nCurrent: <code>{THREADS}</code> • Max 300", [[("🧵 50", "threads_50", "primary"), ("🧵 100", "threads_100", "success")], [("🧵 200", "threads_200", "primary"), ("🧵 300", "threads_300", "success")], [("⬅️ Back", "proxysettings", "danger")]])
+        return
     text, rows = menu_main(user.id)
     await reply_menu(msg, "🔘 This bot is 100% button-driven — pick an option below 👇\n\n" + text, rows)
 
@@ -2165,6 +2184,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         clear_pending(uid)
 
+    # Auto-detect proxy text paste (ip:port) vs combo
+    # If text looks like proxies and not combos, treat as proxy upload
+    proxy_lines = [l for l in text.splitlines() if l.strip() and re.match(r"^(https?://)?([^:]+:[^@]+@)?\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+$", l.strip())]
+    if proxy_lines:
+        maybe_creds = extract_credentials(text)
+        if proxy_lines and not maybe_creds:
+            ac = bool(STORE.get_setting("auto_check", True))
+            added, invalid = await asyncio.to_thread(add_proxies_to_pool, [l.strip() for l in text.splitlines() if l.strip()], ac)
+            await reply_menu(msg, f"📥 <b>Proxies Auto-Detected</b>\n\n➕ <code>{added}</code> • ⚠️ <code>{invalid}</code>\n📦 Pool: <code>{pool_size()}</code> • 🌐 Live: <code>{proxy_count()}</code>", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Menu", "menu", "danger")]])
+            return
     # plain credential paste without button
     creds = extract_credentials(text)
     if creds:
@@ -2188,6 +2217,9 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     uid = user.id
     pending = get_pending(uid)
+
+    # Auto-detect file type if no pending or stale pending — proxy vs combo
+    # Will decide after downloading file whether it's proxy or combo
 
     # Handle proxy file upload when in addpx state
     if pending and pending.get("kind") == "addpx":
@@ -2242,8 +2274,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     doc = msg.document
     name = (doc.file_name or "unknown.txt").lower()
-    if not name.endswith((".txt", ".log", ".json", ".csv")):
-        await reply_menu(msg, "❌ Only <code>.txt / .log / .json / .csv</code> files allowed.",
+    if not name.endswith((".txt", ".log", ".json", ".csv", ".dat", ".lst")):
+        await reply_menu(msg, "❌ Only <code>.txt / .log / .json / .csv / .dat</code> files allowed.",
                          [[("📂 Try Again", "file", "primary"), ("⬅️ Menu", "menu", "danger")]])
         return
     if doc.file_size and doc.file_size > MAX_FILE_MB * 1024 * 1024:
@@ -2265,6 +2297,21 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not text.strip():
         await note.edit_text("❌ File is empty.")
         return
+    # Auto-detect: if file looks like proxies (ip:port lines) and no combos, treat as proxy upload
+    proxy_like = sum(1 for l in text.splitlines() if l.strip() and (":" in l.strip() and "@" in l.strip() or l.strip().count(":")>=1 and "." in l.strip() and not "@" in l.strip().split(":")[0]))
+    # Better: check if lines are ip:port and not email:pass
+    proxy_lines = [l for l in text.splitlines() if l.strip() and re.match(r"^(https?://)?([^:]+:[^@]+@)?\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+$", l.strip())]
+    combo_creds = extract_credentials(text)
+    if proxy_lines and not combo_creds:
+        # It's a proxy file — handle as proxy upload (1000% accuracy)
+        ac = bool(STORE.get_setting("auto_check", True))
+        added, invalid = await asyncio.to_thread(add_proxies_to_pool, [l.strip() for l in text.splitlines() if l.strip()], ac)
+        await note.edit_text(f"📥 <b>Proxies Auto-Detected & Added</b>\n\n➕ <code>{added}</code> • ⚠️ <code>{invalid}</code>\n📦 Pool: <code>{pool_size()}</code> • 🌐 Live: <code>{proxy_count()}</code>\n\n{'🔎 Auto-check...' if ac else ''}", parse_mode=ParseMode.HTML)
+        await reply_menu(msg, f"✅ Proxies ready! Pool: <code>{pool_size()}</code> • Live: <code>{proxy_count()}</code>", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("💎 Check Account", "check", "success")], [("⬅️ Menu", "menu", "danger")]])
+        return
+    elif proxy_lines and combo_creds:
+        # Mixed file — prioritize combo check (user likely sent combo file with some proxy lines)
+        pass
     await _run_and_report(msg, uid, text)
 
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2404,6 +2451,14 @@ def main():
     from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("cmds", cmd_any))
+    app.add_handler(CommandHandler("commands", cmd_any))
+    app.add_handler(CommandHandler("help", cmd_any))
+    app.add_handler(CommandHandler("proxy", cmd_any))
+    app.add_handler(CommandHandler("proxies", cmd_any))
+    app.add_handler(CommandHandler("addproxy", cmd_any))
+    app.add_handler(CommandHandler("clearproxy", cmd_any))
+    app.add_handler(CommandHandler("threads", cmd_any))
     app.add_handler(MessageHandler(filters.COMMAND, cmd_any))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
