@@ -1949,18 +1949,15 @@ def menu_main(uid: int):
         [("💎 Check Account", "check", "success"), ("📂 Check File", "file", "primary")],
         [("📖 How To Use", "help", "primary"), ("📊 Bot Stats", "status", "primary")],
     ]
-    if is_admin(uid):
-        rows.append([("👑 Owner Panel", "opanel", "success")])
-    else:
-        rows.append([("👥 Support", "help", "primary")])
+    # FREE MODE — all tools for everyone, no owner gate
+    rows.append([("👑 Tools Panel", "opanel", "success")])
     return header, rows
 
 def menu_owner():
     ac = bool(STORE.get_setting("auto_check", True)) if STORE else True
-    # Premium header already wrapped via _premium_wrap
-    # Show live vs custom pool clearly: Pool = custom-added, Live = harvested+custom live
+    # FREE MODE — Tools Panel for everyone
     header = (
-        "👑 <b>BlazeNXT — Owner Panel</b> 🎀\n"
+        "👑 <b>BlazeNXT — Tools Panel</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
         f"🌐 Proxies: <code>{proxy_count()} live</code> • Pool: <code>{pool_size()} custom</code>\n"
         f"⚙️ Auto-Check: <code>{'ON' if ac else 'OFF'}</code> • 🧵 <code>{THREADS} threads</code>\n"
@@ -2197,38 +2194,22 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         elif reply_action == "opanel":
-            if not is_owner:
-                await msg.reply_text("⛔ Owner only.", parse_mode=ParseMode.HTML)
-                return
             text, rows = menu_owner()
-            # Hybrid: ReplyKeyboard with colors (no inline duplicate)
             await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=owner_reply_kb())
             return
         elif reply_action == "genpick":
-            if not is_owner:
-                await msg.reply_text("⛔ Owner only.", parse_mode=ParseMode.HTML)
-                return
             await msg.reply_text("🔑 <b>Generate Code</b>\n\nPick a duration 👇", parse_mode=ParseMode.HTML, reply_markup=gen_reply_kb())
             return
         elif reply_action in ("gen_24", "gen_48", "gen_72"):
-            if not is_owner:
-                await msg.reply_text("⛔ Owner only.", parse_mode=ParseMode.HTML)
-                return
             hours = int(reply_action.split("_")[1])
             code = generate_code()
             exp = STORE.add_code(code, hours)
             await msg.reply_text(f"✅ <b>Code Generated!</b>\n\n🔑 <code>{code}</code>\n⏳ Valid: <code>{hours}h</code> (until {fmt_dt(exp)})", parse_mode=ParseMode.HTML, reply_markup=owner_reply_kb())
             return
         elif reply_action == "status":
-            if not is_owner:
-                await msg.reply_text("⛔ Owner only.", parse_mode=ParseMode.HTML)
-                return
             await msg.reply_text(status_text(), parse_mode=ParseMode.HTML, reply_markup=owner_reply_kb())
             return
         elif reply_action == "refresh":
-            if not is_owner:
-                await msg.reply_text("⛔ Owner only.", parse_mode=ParseMode.HTML)
-                return
             await msg.reply_text("🔄 <b>Refreshing proxies...</b>\n⏳ Please wait", parse_mode=ParseMode.HTML)
             try:
                 await asyncio.to_thread(refresh_live_proxies, True)
@@ -2237,39 +2218,24 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await msg.reply_text(f"❌ Error: <code>{esc(str(e)[:120])}</code>", parse_mode=ParseMode.HTML)
             return
         elif reply_action == "pool":
-            if not is_owner:
-                await msg.reply_text("⛔ Owner only.", parse_mode=ParseMode.HTML)
-                return
             ac = bool(STORE.get_setting("auto_check", True))
             text = f"🌐 <b>Proxy Pool</b>\n━━━━━━━━━━━━━━━━━━━━━\n📥 Pool (user-added): <code>{pool_size()}</code>\n🌐 Live in use: <code>{proxy_count()}</code>\n⚙️ Auto-Check: <code>{'ON' if ac else 'OFF'}</code>\n🔁 Auto Refresh: <code>{PROXY_REFRESH_MINUTES} min</code>"
             await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=owner_reply_kb())
             return
         elif reply_action == "addpx":
-            if not is_owner:
-                await msg.reply_text("⛔ Owner only.", parse_mode=ParseMode.HTML)
-                return
             set_pending(uid, "addpx")
             await msg.reply_text("📥 <b>Add Proxies</b>\n\nPaste your proxy lines (one per line):\n<code>host:port</code> or <code>user:pass:host:port</code> or full <code>http://…</code> urls.\n\nMax " + str(MAX_PASTED_PROXIES) + " lines.", parse_mode=ParseMode.HTML, reply_markup=_build_reply_kb([["⬅️ Main Menu"]]))
             return
         elif reply_action == "clearpool":
-            if not is_owner:
-                await msg.reply_text("⛔ Owner only.", parse_mode=ParseMode.HTML)
-                return
             await asyncio.to_thread(clear_pool)
             await msg.reply_text("🧹 <b>Pool cleared.</b> Live list reset too.", parse_mode=ParseMode.HTML, reply_markup=owner_reply_kb())
             return
         elif reply_action == "autocheck":
-            if not is_owner:
-                await msg.reply_text("⛔ Owner only.", parse_mode=ParseMode.HTML)
-                return
             new = not bool(STORE.get_setting("auto_check", True))
             STORE.set_setting("auto_check", new)
             await msg.reply_text(f"⚙️ <b>Auto-Check Proxies: {'ON' if new else 'OFF'}</b>", parse_mode=ParseMode.HTML, reply_markup=owner_reply_kb())
             return
         elif reply_action == "oxaam":
-            if not is_owner:
-                await msg.reply_text("⛔ Owner only.", parse_mode=ParseMode.HTML)
-                return
             await msg.reply_text("🤖 <b>Oxaam Fetch</b>\n⏳ Pulling a fresh account...", parse_mode=ParseMode.HTML)
             try:
                 email, pw, res = await asyncio.to_thread(_oxaam_do)
@@ -2283,9 +2249,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.reply_text(_oxaam_report(email, pw, res), parse_mode=ParseMode.HTML, reply_markup=owner_reply_kb())
             return
         elif reply_action == "tv":
-            if not is_owner:
-                await msg.reply_text("⛔ Owner only.", parse_mode=ParseMode.HTML)
-                return
             set_pending(uid, "tv_email")
             await msg.reply_text("📺 <b>TV Activation — Step 1/2</b>\n\nSend me <code>EMAIL:PASS</code> of the account.", parse_mode=ParseMode.HTML, reply_markup=_build_reply_kb([["⬅️ Main Menu"]]))
             return
@@ -2540,16 +2503,10 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
     elif data == "opanel":
-        if not is_admin(uid, getattr(q.from_user, "username", None)):
-            await edit_menu(m, "⛔ Owner only.", [[("⬅️ Back", "menu", "danger")]])
-            return
         text, rows = menu_owner()
         await edit_menu(m, text, rows)
 
     elif data == "genpick":
-        if not is_admin(uid, getattr(q.from_user, "username", None)):
-            await edit_menu(m, "⛔ Owner only.", [[("⬅️ Back", "menu", "danger")]])
-            return
         rows = [
             [("⏳ 24 Hours", "gen_24", "success"), ("⏳ 48 Hours", "gen_48", "success")],
             [("⏳ 72 Hours", "gen_72", "success")],
@@ -2558,9 +2515,6 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_menu(m, "🔑 <b>Generate Code</b>\n\nPick a duration 👇", rows)
 
     elif data in ("gen_24", "gen_48", "gen_72"):
-        if not is_admin(uid, getattr(q.from_user, "username", None)):
-            await edit_menu(m, "⛔ Owner only.", [[("⬅️ Back", "menu", "danger")]])
-            return
         hours = int(data.split("_")[1])
         code = generate_code()
         exp = STORE.add_code(code, hours)
@@ -2572,17 +2526,11 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             rows)
 
     elif data == "status":
-        if not is_admin(uid, getattr(q.from_user, "username", None)):
-            await edit_menu(m, "⛔ Owner only.", [[("⬅️ Back", "menu", "danger")]])
-            return
         await edit_menu(m, status_text(),
                         [[("📡 Refresh Proxies", "refresh", "primary"),
                           ("⬅️ Back", "opanel", "danger")]])
 
     elif data == "refresh":
-        if not is_admin(uid, getattr(q.from_user, "username", None)):
-            await edit_menu(m, "⛔ Owner only.", [[("⬅️ Back", "menu", "danger")]])
-            return
         await edit_menu(m, "🔄 <b>Refreshing proxies...</b>\n⏳ Please wait", None)
         try:
             await asyncio.to_thread(refresh_live_proxies, True)
@@ -2593,9 +2541,6 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             [[("⬅️ Back", "opanel", "danger")]])
 
     elif data == "pool":
-        if not is_admin(uid, getattr(q.from_user, "username", None)):
-            await edit_menu(m, "⛔ Owner only.", [[("⬅️ Back", "menu", "danger")]])
-            return
         ac = bool(STORE.get_setting("auto_check", True))
         text = (
             "🌐 <b>Proxy Pool</b>\n"
@@ -2611,9 +2556,6 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                          [("⬅️ Back", "opanel", "danger")]])
 
     elif data == "addpx":
-        if not is_admin(uid, getattr(q.from_user, "username", None)):
-            await edit_menu(m, "⛔ Owner only.", [[("⬅️ Back", "menu", "danger")]])
-            return
         set_pending(uid, "addpx")
         await edit_menu(m,
             "📥 <b>Add Proxies</b>\n\n"
@@ -2624,17 +2566,11 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [[("⬅️ Back", "opanel", "danger")]])
 
     elif data == "clearpool":
-        if not is_admin(uid, getattr(q.from_user, "username", None)):
-            await edit_menu(m, "⛔ Owner only.", [[("⬅️ Back", "menu", "danger")]])
-            return
         await asyncio.to_thread(clear_pool)
         text, rows = menu_owner()
         await edit_menu(m, "🧹 <b>Pool cleared.</b> Live list reset too.\n\n" + text, rows)
 
     elif data == "autocheck":
-        if not is_admin(uid, getattr(q.from_user, "username", None)):
-            await edit_menu(m, "⛔ Owner only.", [[("⬅️ Back", "menu", "danger")]])
-            return
         new = not bool(STORE.get_setting("auto_check", True))
         STORE.set_setting("auto_check", new)
         extra = ("ON = added proxies are auto-tested in the background and only live ones are used.\n"
@@ -2645,9 +2581,6 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [[("⬅️ Back", "opanel", "danger")]])
 
     elif data == "oxaam":
-        if not is_admin(uid, getattr(q.from_user, "username", None)):
-            await edit_menu(m, "⛔ Owner only.", [[("⬅️ Back", "menu", "danger")]])
-            return
         await edit_menu(m, "🤖 <b>Oxaam Fetch</b>\n⏳ Pulling a fresh account...", None)
         try:
             email, pw, res = await asyncio.to_thread(_oxaam_do)
@@ -2664,9 +2597,6 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         [[("🔁 Again", "oxaam", "success"), ("⬅️ Back", "opanel", "danger")]])
 
     elif data == "tv":
-        if not is_admin(uid, getattr(q.from_user, "username", None)):
-            await edit_menu(m, "⛔ Owner only.", [[("⬅️ Back", "menu", "danger")]])
-            return
         set_pending(uid, "tv_email")
         await edit_menu(m,
             "📺 <b>TV Activation — Step 1/2</b>\n\n"
