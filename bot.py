@@ -975,14 +975,19 @@ def ensure_proxies() -> None:
             refresh_live_proxies(force=True)
 
 def _proxy_loop() -> None:
-    # 24x7 auto proxy loader — keeps proxies fresh round the clock
+    # 24x7 auto proxy loader — respects Auto Load toggle in Proxy Settings
     while True:
         try:
-            # If live low, force refresh quickly
-            if proxy_count() < 20:
-                refresh_live_proxies(force=True)
-            else:
-                refresh_live_proxies(force=False)
+            auto_on = True
+            try:
+                auto_on = bool(STORE.get_setting("auto_proxy", True)) if STORE else True
+            except Exception:
+                auto_on = True
+            if auto_on:
+                if proxy_count() < 20:
+                    refresh_live_proxies(force=True)
+                else:
+                    refresh_live_proxies(force=False)
         except Exception as e:
             logger.warning("Proxy loop error: %s", e)
         # Sleep 5 min, but check every 60s if low
@@ -1994,18 +1999,21 @@ def menu_main(uid: int):
 
 def menu_owner():
     # JUST CHECKER — Proxy Settings only
+    auto_on = bool(STORE.get_setting("auto_proxy", True)) if STORE else True
     header = (
         "⚙️ <b>Proxy Settings</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
         f"📊 Status: <code>{'ON' if proxy_count() else 'OFF'}</code> • 📦 Loaded: <code>{pool_size()}</code> • 🌐 Live: <code>{proxy_count()}</code>\n"
-        f"🧵 Threads: <code>{THREADS}</code> (max 500) • ⚙️ Auto: <code>ON</code>\n"
+        f"🧵 Threads: <code>{THREADS}</code> (max 500) • 🔄 Auto Load: <code>{'ON' if auto_on else 'OFF'}</code>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
-        "Format: <code>user:pass@ip:port</code> or <code>ip:port</code>"
+        "Format: <code>user:pass@ip:port</code> or <code>ip:port</code>\n"
+        "24x7 auto-fetch every 5 min when ON"
     )
     rows = [
         [("🔄 Refresh Auto", "refresh", "primary"), ("📥 Upload Proxies", "addpx", "success")],
         [("❌ Disable Proxies", "disableproxies", "danger"), ("🧹 Clear Proxies", "clearpool", "danger")],
-        [("🧵 Set Threads", "setthreads", "primary"), ("⬅️ Back", "menu", "danger")],
+        [("🔄 Auto Load: ON" if auto_on else "⏸️ Auto Load: OFF", "autoproxy", "primary"), ("🧵 Set Threads", "setthreads", "primary")],
+        [("⬅️ Back", "menu", "danger")],
     ]
     return header, rows
 
@@ -2647,6 +2655,13 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text, rows = menu_owner()
         await edit_menu(m, "🧹 <b>Pool cleared.</b>\n\n" + text, rows)
         return
+    elif data == "autoproxy":
+        cur = bool(STORE.get_setting("auto_proxy", True)) if STORE else True
+        STORE.set_setting("auto_proxy", not cur)
+        STORE.save()
+        text, rows = menu_owner()
+        await edit_menu(m, f"{'✅ Auto Load ON' if not cur else '⏸️ Auto Load OFF'} — 24x7 auto-fetch {'enabled' if not cur else 'disabled'}\n\n" + text, rows)
+        return
     elif data == "setthreads":
         await edit_menu(m, f"🧵 <b>Set Threads</b>\nCurrent: <code>{THREADS}</code> • Max 300",
                         [[("🧵 50", "threads_50", "primary"), ("🧵 100", "threads_100", "success")],
@@ -2727,10 +2742,13 @@ def main():
     print(f"[*] Owner: {OWNER_USERNAME} ({OWNER_ID}) | Threads: {THREADS} | Data dir: {DATA_DIR.resolve()}")
 
     _load_pool_into_live()
-    # Immediate auto-load attempt
+    # Immediate auto-load if enabled
     try:
-        refresh_live_proxies(force=True)
-        print(f"[*] Auto proxies initial: {proxy_count()} live")
+        if bool(STORE.get_setting("auto_proxy", True)):
+            refresh_live_proxies(force=True)
+            print(f"[*] Auto proxies initial: {proxy_count()} live")
+        else:
+            print(f"[*] Auto Load OFF — skipping initial refresh")
     except Exception as e:
         print(f"[!] Initial proxy refresh failed: {e}")
     import threading
@@ -2747,6 +2765,8 @@ def main():
     app.add_handler(CommandHandler("addproxy", cmd_any))
     app.add_handler(CommandHandler("clearproxy", cmd_any))
     app.add_handler(CommandHandler("threads", cmd_any))
+    app.add_handler(CommandHandler("autoproxy", cmd_any))
+    app.add_handler(CommandHandler("autoload", cmd_any))
     app.add_handler(MessageHandler(filters.COMMAND, cmd_any))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
