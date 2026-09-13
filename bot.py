@@ -1886,7 +1886,7 @@ def welcome_premium_text(uid: int, name: str) -> str:
         "│  🔥 <b>BlazeNXT</b> — <i>CRUNCHYROLL</i> 🔥  │\n"
         "│  <i>Premium Checker • FREE</i>   │\n"
         "╰────────────────────────╯\n"
-        f"👋 Hey <b>{esc(name)}</b>! <code>{uid}</code>\n"
+        f"👋 Hey <b>{esc(name)}</b>{'! <code>' + str(uid) + '</code>' if str(name) != str(uid) else ''}\n"
         f"{access_line}\n"
         "┌─ <b>STATS</b> ────────────────┐\n"
         f"│ 🌐 Proxies: <code>{proxy_count()} live</code> • 📦 Pool: <code>{pool_size()}</code>\n"
