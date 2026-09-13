@@ -194,9 +194,9 @@ ACTIVE_CHECK_MSG: dict = {}
 CHECK_QUEUE: dict = {}  # uid -> list of queued texts
 USER_LOCK = threading.Lock()
 SECURE_LOG = True
-MAX_FILE_MB = 20
+MAX_FILE_MB = 100  # unlimited - 100MB ~1M combos
 PREMIUM_ONLY_DEFAULT = True
-MAX_PASTED_CREDS = 5000  # upgraded from 2000
+MAX_PASTED_CREDS = 1000000  # UNLIMITED file check - removed 5000 limit
 MAX_PASTED_PROXIES = 10000  # upgraded from 5000
 MAX_THREADS_USER = 500
 MAX_HIT_CARDS = 150
@@ -3092,7 +3092,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await reply_menu(msg, "💎 <b>Check Account</b>\n\nSend <code>EMAIL:PASS</code> — one or many lines.\nExample: <code>user@gmail.com:pass123</code>\n\n✨ Auto clean + dedup + retry enabled", [[("⬅️ Back", "menu", "danger")]])
                 return
             elif compat_action == "file":
-                await reply_menu(msg, "📂 <b>Check File</b>\n\nSend me your <code>.txt</code> / <code>.csv</code> file with combos.\n\nAuto clean + dedup + 5000 max", [[("⬅️ Back", "menu", "danger")]])
+                await reply_menu(msg, "📂 <b>Check File</b>\n\nSend me your <code>.txt</code> / <code>.csv</code> file with combos.\n\nAuto clean + dedup + Unlimited ♾️", [[("⬅️ Back", "menu", "danger")]])
                 return
             elif compat_action == "help":
                 await reply_menu(msg, help_text(), [[("⬅️ Back", "menu", "danger")]])
@@ -3127,10 +3127,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         [[("🔁 Try Again", "check", "success"), ("⬅️ Menu", "menu", "danger")]])
                     return
                 if len(creds) > MAX_PASTED_CREDS:
-                    await reply_menu(msg,
-                        f"❌ Too many lines (max {MAX_PASTED_CREDS}). Send a file instead.",
-                        [[("📂 Check File", "file", "primary"), ("⬅️ Menu", "menu", "danger")]])
-                    return
+                    await msg.reply_text(f"⚠️ Large paste: <code>{len(creds)}</code> combos — unlimited ♾️ processing...", parse_mode=ParseMode.HTML)
+                # unlimited - continue
                 await _run_and_report(msg, uid, text)
                 return
 
@@ -3327,8 +3325,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         creds = extract_credentials(text)
         if creds:
             if len(creds) > MAX_PASTED_CREDS:
-                await reply_menu(msg, f"❌ Too many lines (max {MAX_PASTED_CREDS}). Send a file.", [[("📂 Check File", "file", "primary")]])
-                return
+                await msg.reply_text(f"⚠️ Large: <code>{len(creds)}</code> combos — unlimited ♾️ processing...", parse_mode=ParseMode.HTML)
+            # unlimited
             await _run_and_report(msg, uid, text)
             return
         if text.startswith("/"):
@@ -3588,7 +3586,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             clear_pending(uid)
             set_pending(uid, "file")
-            await edit_menu(m, "📂 <b>Check File</b>\n\nSend me your file.\n\nSupports up to 5000 combos + auto clean", [[("⬅️ Back", "menu", "danger")]])
+            await edit_menu(m, "📂 <b>Check File</b>\n\nSend me your file.\n\nUnlimited combos ♾️ + auto clean + dedup — kitna bhi check karo!", [[("⬅️ Back", "menu", "danger")]])
             return
         elif data == "cleancombos":
             if not is_admin(uid, uname_btn):
