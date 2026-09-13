@@ -60,7 +60,7 @@ except ImportError:
     sys.exit(1)
 
 try:
-    from telegram import Update, InputFile, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+    from telegram import Update, InputFile, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
     from telegram.constants import ParseMode
     from telegram.error import BadRequest, RetryAfter  # FloodWait in older PTB
     from telegram.ext import (
@@ -1792,8 +1792,8 @@ async def reply_menu(msg, text, rows):
 async def edit_menu(msg, text, rows):
     return await _send_menu(msg, text, rows, edit=True)
 
-# ===================== REPLY KEYBOARD REMOVED — JUST CHECKER INLINE ONLY =====================
-# Reply board hata diya — sirf inline buttons. Double message fix.
+# ===================== REPLY KEYBOARD COMPLETELY REMOVED =====================
+# No board at all — inline only. Old board removed via ReplyKeyboardRemove.
 def _build_reply_kb(rows, resize=True, one_time=False):
     return None
 def main_reply_kb(is_owner: bool):
@@ -2042,7 +2042,15 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if is_owner:
                 text = "👑 <b>Welcome Owner!</b>\n" + "━━━━━━━━━━━━━━━━━━━━━\n" + text
             t2, rows2 = menu_main(uid)
-            await reply_menu(msg, text, rows2)
+            # Completely remove reply keyboard (single visible message via edit)
+            try:
+                tmp = await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=ReplyKeyboardRemove())
+                try:
+                    await tmp.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=_build_kb(rows2))
+                except Exception:
+                    await reply_menu(msg, text, rows2)
+            except Exception:
+                await reply_menu(msg, text, rows2)
             return
         except Exception as e:
             logger.warning("hybrid menu send failed %s", e)
@@ -2053,8 +2061,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_owner = is_admin(uid, getattr(user, "username", None))
     if is_owner:
         text = "👑 <b>Welcome Owner!</b>\n\n" + text
-        await reply_menu(msg, text, rows)
-    else:
+    try:
+        tmp = await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=ReplyKeyboardRemove())
+        try:
+            await tmp.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=_build_kb(rows))
+        except Exception:
+            await reply_menu(msg, text, rows)
+    except Exception:
         await reply_menu(msg, text, rows)
 
 async def cmd_any(update: Update, context: ContextTypes.DEFAULT_TYPE):
