@@ -829,6 +829,7 @@ PROXY_TEST_URLS = [
 
 LIVE_PROXIES: List[dict] = []
 PROXY_SCORES: dict = {}  # proxy url -> success count for smart ranking
+REFRESH_STATE: dict = {"tested": 0, "live": 0, "total": 0, "start": 0}
 PROXY_LOCK = threading.Lock()
 _refresh_busy = threading.Lock()
 LAST_PROXY_HARVEST = 0.0
@@ -945,16 +946,26 @@ def refresh_live_proxies(force: bool = False) -> None:
         random.shuffle(candidates)
         to_test = candidates[:PROXY_TEST_SAMPLE]
         live = []
+        # Real live progress tracking
+        REFRESH_STATE["total"] = len(to_test)
+        REFRESH_STATE["tested"] = 0
+        REFRESH_STATE["live"] = 0
+        REFRESH_STATE["start"] = time.time()
         with ThreadPoolExecutor(max_workers=150) as ex:  # 100x faster
             futures = {ex.submit(test_one_proxy, p): p for p in to_test}
             for fut in as_completed(futures):
+                REFRESH_STATE["tested"] += 1
                 try:
                     res = fut.result()
                 except Exception:
                     continue
                 if res:
                     live.append(res)
+                    REFRESH_STATE["live"] = len(live)
                     if len(live) >= MAX_PROXIES_TO_KEEP:
+                        # cancel remaining futures
+                        for f in futures:
+                            f.cancel()
                         break
         # Fallback: if no live after test but harvested many, keep a few untested so auto load not 0
         if not live and candidates:
@@ -2751,23 +2762,34 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_menu(m, "❌ Invalid.", [[("⬅️ Back", "proxysettings", "danger")]])
         return
     elif data == "refresh":
-        start = time.time()
-        await edit_menu(m, "🔄 <b>Refreshing proxies...</b>\n━━━━━━━━━━━━━━━━━━━━━\n⏳ <b>Gathering</b> from 12 sources...\n📦 <b>Testing</b> 1000 with 150 workers\n⏱️ <b>Elapsed:</b> <code>0s</code> • 🌐 <b>Live:</b> <code>0</code>", None)
+        REFRESH_STATE["start"] = time.time()
+        await edit_menu(m, "🔄 <b>Refreshing proxies...</b>\n━━━━━━━━━━━━━━━━━━━━━\n⏳ <b>Gathering</b> from 12 sources...\n📦 <b>Queued</b> 1000 candidates", None)
         async def _rp():
             while True:
-                await asyncio.sleep(1.5)
+                await asyncio.sleep(1.2)
                 try:
-                    e=int(time.time()-start);lv=proxy_count();pct=min(95,int(e/18*100)) if e<18 else 95;bar="█"*(pct//10)+"░"*(10-pct//10)
-                    await edit_menu(m, f"🔄 <b>Refreshing...</b>\n━━━━━━━━━━━━━━━━━━━━━\n📦 <b>Testing</b> 1000 [{bar}] {pct}%\n⏱️ <b>Elapsed:</b> <code>{e}s</code> • 🌐 <b>Live:</b> <code>{lv}</code>\n⏳ <b>ETA:</b> <code>{max(0,18-e)}s</code>", None)
-                except: break
+                    tested = REFRESH_STATE.get("tested", 0)
+                    total = REFRESH_STATE.get("total", 1000) or 1000
+                    live = REFRESH_STATE.get("live", 0)
+                    pct = int(tested / total * 100) if total else 0
+                    bar = "█" * (pct // 10) + "░" * (10 - pct // 10)
+                    elapsed = int(time.time() - REFRESH_STATE.get("start", time.time()))
+                    # Real ETA based on rate
+                    rate = tested / max(1, elapsed)
+                    eta = int((total - tested) / max(1, rate)) if rate else 0
+                    await edit_menu(m, f"🔄 <b>Refreshing — Real Live</b>\n━━━━━━━━━━━━━━━━━━━━━\n📦 <b>Testing</b> {tested}/{total} [{bar}] {pct}%\n🌐 <b>Live:</b> <code>{live}</code> • ✅ <b>Rate:</b> <code>{live}/{tested}</code>\n⏱️ <b>Elapsed:</b> <code>{elapsed}s</code> • ⏳ <b>ETA:</b> <code>{eta}s</code>\n⚡ <b>100x Fast</b> • 150 workers", None)
+                except Exception:
+                    break
         prog=asyncio.create_task(_rp())
         try:
             await asyncio.to_thread(refresh_live_proxies, True)
         finally:
             try: prog.cancel()
             except: pass
-        e=int(time.time()-start);lv=proxy_count();pl=pool_size()
-        await edit_menu(m, f"✅ <b>Ready</b>\n━━━━━━━━━━━━━━━━━━━━━\n🌐 <b>Live:</b> <code>{lv}</code> • 📦 <b>Pool:</b> <code>{pl}</code>\n⏱️ <b>Time:</b> <code>{e}s</code> • Tested 1000\n⚡ <b>100x Fast</b>", [[("⚙️ Proxy Settings","proxysettings","primary"),("⬅️ Back","menu","danger")]])
+        elapsed = int(time.time() - REFRESH_STATE.get("start", time.time()))
+        live = proxy_count()
+        pool = pool_size()
+        await edit_menu(m, f"✅ <b>Auto Proxies Ready — Real</b>\n━━━━━━━━━━━━━━━━━━━━━\n🌐 <b>Live:</b> <code>{live}</code> • 📦 <b>Pool:</b> <code>{pool}</code>\n⏱️ <b>Time:</b> <code>{elapsed}s</code> • Tested {REFRESH_STATE.get('tested',0)}/{REFRESH_STATE.get('total',0)}\n⚡ <b>100x Fast</b> • 1:1 ready", [[("⚙️ Proxy Settings","proxysettings","primary"),("⬅️ Back","menu","danger")]])
         return
         try:
             await asyncio.to_thread(refresh_live_proxies, True)
