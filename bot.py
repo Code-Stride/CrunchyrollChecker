@@ -2796,12 +2796,6 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pool = pool_size()
         await edit_menu(m, f"✅ <b>Auto Proxies Ready — Real</b>\n━━━━━━━━━━━━━━━━━━━━━\n🌐 <b>Live:</b> <code>{live}</code> • 📦 <b>Pool:</b> <code>{pool}</code>\n⏱️ <b>Time:</b> <code>{elapsed}s</code> • Tested {REFRESH_STATE.get('tested',0)}/{REFRESH_STATE.get('total',0)}\n⚡ <b>100x Fast</b> • 1:1 ready", [[("⚙️ Proxy Settings","proxysettings","primary"),("⬅️ Back","menu","danger")]])
         return
-        try:
-            await asyncio.to_thread(refresh_live_proxies, True)
-            await edit_menu(m, f"✅ <b>OLD READY\n📦 Pool: <code>{pool_size()}</code>", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Back", "menu", "danger")]])
-        except Exception as e:
-            await edit_menu(m, f"❌ Error: <code>{esc(str(e)[:120])}</code>", [[("⬅️ Back", "proxysettings", "danger")]])
-        return
     elif data == "admins":
         if uid != OWNER_ID and uid not in ADMIN_IDS:
             await edit_menu(m, "❌ <b>Owner Only</b>", [[("⬅️ Back", "menu", "danger")]])
