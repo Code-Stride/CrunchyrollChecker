@@ -1799,115 +1799,24 @@ async def reply_menu(msg, text, rows):
 async def edit_menu(msg, text, rows):
     return await _send_menu(msg, text, rows, edit=True)
 
-# ===================== REPLY KEYBOARD (Hybrid) =====================
-# Hybrid: main menus use ReplyKeyboardMarkup (persistent bottom keyboard),
-# sub-menus still use InlineKeyboardMarkup. This matches user choice "hybrid".
-def _build_reply_kb(rows, resize=True, one_time=False) -> ReplyKeyboardMarkup:
-    """rows: each item can be (label), (label,style) or dict."""
-    use_style = _CAPS["style"] is not False
-    kb = []
-    for row in rows:
-        btns = []
-        for item in row:
-            label = ""
-            style = None
-            web_app = None
-            if isinstance(item, (list, tuple)):
-                label = item[0] if len(item) > 0 else ""
-                style = item[1] if len(item) > 1 else None
-                web_app = item[2] if len(item) > 2 else None
-            elif isinstance(item, dict):
-                label = item.get("text", "")
-                style = item.get("style")
-                web_app = item.get("web_app") or item.get("web_app_url")
-            else:
-                label, style = str(item), None
-            kwargs = {}
-            if style and use_style and style in ("primary","success","danger"):
-                kwargs["style"] = style
-            if web_app:
-                try:
-                    from telegram import WebAppInfo as _WAI
-                    if isinstance(web_app, str):
-                        kwargs["web_app"] = _WAI(url=web_app)
-                    else:
-                        kwargs["web_app"] = web_app
-                except Exception:
-                    pass
-            btns.append(KeyboardButton(label, **kwargs))
-        kb.append(btns)
-    return ReplyKeyboardMarkup(kb, resize_keyboard=resize, one_time_keyboard=one_time)
+# ===================== REPLY KEYBOARD REMOVED — JUST CHECKER INLINE ONLY =====================
+# Reply board hata diya — sirf inline buttons. Double message fix.
+def _build_reply_kb(rows, resize=True, one_time=False):
+    return None
+def main_reply_kb(is_owner: bool):
+    return None
+def owner_reply_kb():
+    return None
+def gen_reply_kb():
+    return None
+REPLY_TEXT_MAP = {}
 
-def main_reply_kb(is_owner: bool) -> ReplyKeyboardMarkup:
-    # JUST CHECKER — minimal
-    rows = [
-        [("💎 Check Account", "success"), ("📂 Check File", "primary")],
-        [("📖 How To Use", "primary"), ("📊 Bot Stats", "primary")],
-        [("⚙️ Proxy Settings", "primary")],
-    ]
-    return _build_reply_kb(rows)
-
-def owner_reply_kb() -> ReplyKeyboardMarkup:
-    # JUST CHECKER — proxy only
-    rows = [
-        [("⚙️ Proxy Settings", "primary")],
-        [("⬅️ Main Menu", "danger")],
-    ]
-    return _build_reply_kb(rows)
-
-def gen_reply_kb() -> ReplyKeyboardMarkup:
-    rows = [
-        [("⏳ 24 Hours", "success"), ("⏳ 48 Hours", "success")],
-        [("⏳ 72 Hours", "success")],
-        [("⬅️ Back", "danger")],
-    ]
-    return _build_reply_kb(rows)
-
-# Map reply button text -> callback-like action
-REPLY_TEXT_MAP = {
-    "💎 Check Account": "check",
-    "📂 Check File": "file",
-    "📖 How To Use": "help",
-    "📊 Bot Stats": "status",
-    "⚙️ Proxy Settings": "proxysettings",
-    "👑 Tools Panel": "proxysettings",
-    "👑 Owner Panel": "proxysettings",
-    "⬅️ Main Menu": "menu",
-    "⬅️ Back": "proxysettings",
-    "🔁 Check Again": "check",
-}
-
-async def _send_reply_menu(msg, text: str, reply_kb: ReplyKeyboardMarkup, inline_rows=None):
-    """Send text with ReplyKeyboard (colored) + fallback handling"""
-    text = text
-    for _attempt in range(4):
-        use_icon = _CAPS["icon"] is not False
-        use_style = _CAPS["style"] is not False
-        try:
-            await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_kb)
-            return True
-        except BadRequest as e:
-            s = str(e).lower()
-            if use_icon and ("emoji" in s or "icon" in s):
-                _CAPS["icon"] = False
-                # rebuild without icon
-                # For simplicity, rebuild reply_kb without icon by recreating
-                # But as we already built kb, we need to rebuild - caller will retry with new _CAPS
-                # So just continue to retry; next loop _build_reply_kb will use new caps
-                continue
-            if use_style and "style" in s:
-                _CAPS["style"] = False
-                continue
-            logger.warning("reply menu send failed: %s", e)
-            return False
+async def _send_reply_menu(msg, text: str, reply_kb, inline_rows=None):
+    # removed — inline only
+    return False
+async def _edit_or_send_reply(msg, text: str, reply_kb):
     return False
 
-async def _edit_or_send_reply(msg, text: str, reply_kb: ReplyKeyboardMarkup):
-    # For reply keyboard, we always send new message (can't edit reply keyboard onto old message)
-    # So we just send new
-    return await _send_reply_menu(msg, text, reply_kb)
-
-# ===================== PENDING INPUT STATE (button -> typed input) =====================
 PENDING: Dict[int, dict] = {}
 PENDING_LOCK = threading.Lock()
 
@@ -2116,9 +2025,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             is_owner = is_admin(uid, getattr(user, "username", None))
             if is_owner:
                 text = "👑 <b>Welcome Owner!</b>\n" + "━━━━━━━━━━━━━━━━━━━━━\n" + text
-            # Hybrid: ReplyKeyboard with colors (style + icon) — no inline duplicate
-            reply_kb = main_reply_kb(is_owner)
-            await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_kb)
+            t2, rows2 = menu_main(uid)
+            await reply_menu(msg, text, rows2)
             return
         except Exception as e:
             logger.warning("hybrid menu send failed %s", e)
@@ -2129,8 +2037,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_owner = is_admin(uid, getattr(user, "username", None))
     if is_owner:
         text = "👑 <b>Welcome Owner!</b>\n\n" + text
-        reply_kb = main_reply_kb(True)
-        await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_kb)
+        await reply_menu(msg, text, rows)
     else:
         await reply_menu(msg, text, rows)
 
@@ -2151,55 +2058,37 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     uid = user.id
     text = msg.text.strip()
-    reply_action = REPLY_TEXT_MAP.get(text)
-
-    if reply_action:
+    # Compat: if user still has old reply board cached, map its text to inline actions (single message)
+    _compat_map = {
+        "💎 Check Account": "check", "📂 Check File": "file",
+        "📖 How To Use": "help", "📊 Bot Stats": "status",
+        "⚙️ Proxy Settings": "proxysettings", "👑 Tools Panel": "proxysettings",
+        "👑 Owner Panel": "proxysettings", "⬅️ Main Menu": "menu", "⬅️ Back": "proxysettings",
+        "🔁 Check Again": "check",
+    }
+    compat_action = _compat_map.get(text)
+    if compat_action:
         clear_pending(uid)
-        is_owner = is_admin(uid, getattr(user, "username", None))
-        if reply_action == "menu":
-            try:
-                nm = getattr(user, "first_name", None) or str(uid)
-                welcome = welcome_premium_text(uid, nm)
-                reply_kb = main_reply_kb(is_owner)
-                await msg.reply_text(welcome, parse_mode=ParseMode.HTML, reply_markup=reply_kb)
-            except Exception:
-                mtext, rows = menu_main(uid)
-                await reply_menu(msg, mtext, rows)
+        if compat_action == "menu":
+            t2, rows2 = menu_main(uid)
+            await reply_menu(msg, t2, rows2)
             return
-        elif reply_action == "check":
+        elif compat_action == "check":
             set_pending(uid, "creds")
-            await msg.reply_text("💎 <b>Check Account</b>\n\nSend <code>EMAIL:PASS</code> — one or many lines.\nExample: <code>user@gmail.com:pass123</code>", parse_mode=ParseMode.HTML, reply_markup=_build_reply_kb([["⬅️ Main Menu"]]))
+            await reply_menu(msg, "💎 <b>Check Account</b>\n\nSend <code>EMAIL:PASS</code> — one or many lines.\nExample: <code>user@gmail.com:pass123</code>", [[("⬅️ Back", "menu", "danger")]])
             return
-        elif reply_action == "file":
-            await msg.reply_text("📂 <b>Check File</b>\n\nSend me your <code>.txt</code> / <code>.csv</code> file with combos.", parse_mode=ParseMode.HTML, reply_markup=_build_reply_kb([["⬅️ Main Menu"]]))
+        elif compat_action == "file":
+            await reply_menu(msg, "📂 <b>Check File</b>\n\nSend me your <code>.txt</code> / <code>.csv</code> file with combos.", [[("⬅️ Back", "menu", "danger")]])
             return
-        elif reply_action == "help":
-            await msg.reply_text(help_text(), parse_mode=ParseMode.HTML, reply_markup=main_reply_kb(is_owner))
+        elif compat_action == "help":
+            await reply_menu(msg, help_text(), [[("⬅️ Back", "menu", "danger")]])
             return
-        elif reply_action == "status":
-            await msg.reply_text(status_text(), parse_mode=ParseMode.HTML, reply_markup=main_reply_kb(is_owner))
+        elif compat_action == "status":
+            await reply_menu(msg, status_text(), [[("⬅️ Back", "menu", "danger")]])
             return
-        elif reply_action == "proxysettings":
+        elif compat_action == "proxysettings":
             ptext, rows = menu_owner()
-            await msg.reply_text(ptext, parse_mode=ParseMode.HTML, reply_markup=owner_reply_kb())
-            try:
-                await reply_menu(msg, ptext, rows)
-            except Exception:
-                pass
-            return
-        elif reply_action in ("genpick", "gen_24", "gen_48", "gen_72", "oxaam", "tv", "pool", "autocheck", "refresh"):
-            await msg.reply_text("ℹ️ <b>Just a Checker</b> — that feature was removed.\nUse <b>💎 Check Account</b> / <b>📂 Check File</b>.", parse_mode=ParseMode.HTML, reply_markup=main_reply_kb(is_owner))
-            return
-        elif reply_action == "addpx":
-            set_pending(uid, "addpx")
-            await msg.reply_text("📥 <b>Upload Proxies</b>\n\nPaste lines (one per line):\n<code>host:port</code> or <code>user:pass@ip:port</code>\nMax " + str(MAX_PASTED_PROXIES) + " lines.", parse_mode=ParseMode.HTML, reply_markup=_build_reply_kb([["⬅️ Main Menu"]]))
-            return
-        elif reply_action == "clearpool":
-            await asyncio.to_thread(clear_pool)
-            await msg.reply_text("🧹 <b>Pool cleared.</b>", parse_mode=ParseMode.HTML, reply_markup=main_reply_kb(is_owner))
-            return
-        elif reply_action == "setthreads":
-            await msg.reply_text("🧵 <b>Set Threads</b> — use inline: <b>⚙️ Proxy Settings</b> → <b>Set Threads</b>", parse_mode=ParseMode.HTML, reply_markup=main_reply_kb(is_owner))
+            await reply_menu(msg, ptext, rows)
             return
     pending = get_pending(uid)
 
@@ -2245,7 +2134,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if kind in ("tv_email", "tv_code"):
             clear_pending(uid)
-            await msg.reply_text("ℹ️ TV removed — just a checker now.", parse_mode=ParseMode.HTML, reply_markup=main_reply_kb(_is_owner(uid)))
+            await reply_menu(msg, "ℹ️ TV removed — just a checker now.", [[("⬅️ Menu", "menu", "danger")]])
             return
 
         clear_pending(uid)
@@ -2258,9 +2147,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         await _run_and_report(msg, uid, text)
         return
-    mtext, rows = menu_main(uid)
-    await reply_menu(msg, "🔘 Send <code>EMAIL:PASS</code> or use buttons 👇\n\n" + mtext, rows)
-
+    # if not creds and not pending, show menu only if user seems lost — but avoid double message on every random text
+    if text.startswith("/"):
+        mtext, rows = menu_main(uid)
+        await reply_menu(msg, "🔘 Use buttons 👇\n\n" + mtext, rows)
+        return
+    # otherwise ignore free text to avoid spamming double messages
+    return
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
