@@ -1839,21 +1839,18 @@ def _build_reply_kb(rows, resize=True, one_time=False) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(kb, resize_keyboard=resize, one_time_keyboard=one_time)
 
 def main_reply_kb(is_owner: bool) -> ReplyKeyboardMarkup:
-    # FREE MODE — sync with menu_main inline, single Crunchyroll
+    # JUST CHECKER — minimal
     rows = [
         [("💎 Check Account", "success"), ("📂 Check File", "primary")],
         [("📖 How To Use", "primary"), ("📊 Bot Stats", "primary")],
-        [("👑 Tools Panel", "success")],
+        [("⚙️ Proxy Settings", "primary")],
     ]
     return _build_reply_kb(rows)
 
 def owner_reply_kb() -> ReplyKeyboardMarkup:
+    # JUST CHECKER — proxy only
     rows = [
-        [("🔑 Generate Code", "success")],
-        [("📥 Add Proxies", "primary"), ("⚙️ Auto-Check", "primary")],
-        [("🌐 Pool Status", "primary"), ("🧹 Clear Pool", "danger")],
-        [("📊 Status", "primary"), ("📡 Refresh Proxies", "primary")],
-        [("🤖 Oxaam Fetch", "success"), ("📺 TV Activation", "success")],
+        [("⚙️ Proxy Settings", "primary")],
         [("⬅️ Main Menu", "danger")],
     ]
     return _build_reply_kb(rows)
@@ -1872,26 +1869,12 @@ REPLY_TEXT_MAP = {
     "📂 Check File": "file",
     "📖 How To Use": "help",
     "📊 Bot Stats": "status",
-    "👑 Tools Panel": "opanel",
-    "👑 Owner Panel": "opanel",
-    "✅ My Access": "myaccess",
-    "📖 How To": "help",
-    "🔑 Generate Code": "genpick",
-    "📥 Add Proxies": "addpx",
-    "⚙️ Auto-Check": "autocheck",
-    "🌐 Pool Status": "pool",
-    "🧹 Clear Pool": "clearpool",
-    "📊 Status": "status",
-    "📡 Refresh Proxies": "refresh",
-    "🤖 Oxaam Fetch": "oxaam",
-    "📺 TV Activation": "tv",
+    "⚙️ Proxy Settings": "proxysettings",
+    "👑 Tools Panel": "proxysettings",
+    "👑 Owner Panel": "proxysettings",
     "⬅️ Main Menu": "menu",
-    "⬅️ Back": "opanel",  # from gen panel back to owner
-    "⏳ 24 Hours": "gen_24",
-    "⏳ 48 Hours": "gen_48",
-    "⏳ 72 Hours": "gen_72",
+    "⬅️ Back": "proxysettings",
     "🔁 Check Again": "check",
-    "⬅️ Main Menu": "menu",
 }
 
 async def _send_reply_menu(msg, text: str, reply_kb: ReplyKeyboardMarkup, inline_rows=None):
@@ -1955,37 +1938,31 @@ AIO_SERVICES = [
 ]
 
 def menu_main(uid: int):
-    # FREE MODE — single Crunchyroll checker, UI improved
+    # JUST CHECKER — minimal 2x2 + Proxy Settings
     try:
         header = welcome_premium_text(uid, str(uid))
     except Exception:
         header = "╭────────────────────────╮\n│  🔥 <b>BlazeNXT</b> — <i>CRUNCHYROLL</i> 🔥  │\n╰────────────────────────╯"
-    # Core checker — clean 2x2 grid feel
     rows = [
         [("💎 Check Account", "check", "success"), ("📂 Check File", "file", "primary")],
         [("📖 How To Use", "help", "primary"), ("📊 Bot Stats", "status", "primary")],
+        [("⚙️ Proxy Settings", "proxysettings", "primary")],
     ]
-    # FREE MODE — all tools for everyone, no owner gate
-    rows.append([("👑 Tools Panel", "opanel", "success")])
     return header, rows
 
 def menu_owner():
-    ac = bool(STORE.get_setting("auto_check", True)) if STORE else True
-    # FREE MODE — Tools Panel for everyone
+    # JUST CHECKER — Proxy Settings only
     header = (
-        "👑 <b>BlazeNXT — Tools Panel</b>\n"
+        "⚙️ <b>Proxy Settings</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🌐 Proxies: <code>{proxy_count()} live</code> • Pool: <code>{pool_size()} custom</code>\n"
-        f"⚙️ Auto-Check: <code>{'ON' if ac else 'OFF'}</code> • 🧵 <code>{THREADS} threads</code>\n"
-        "━━━━━━━━━━━━━━━━━━━━━"
+        f"📊 Status: <code>{'ON' if proxy_count() else 'OFF'}</code> • 📦 Loaded: <code>{pool_size()}</code> • 🌐 Live: <code>{proxy_count()}</code>\n"
+        f"🧵 Threads: <code>{THREADS}</code> (max 300) • ⚙️ Auto: <code>ON</code>\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "Format: <code>user:pass@ip:port</code> or <code>ip:port</code>"
     )
     rows = [
-        [("🔑 Generate Code", "genpick", "success")],
-        [("📥 Add Proxies", "addpx", "primary"), ("🧹 Clear Pool", "clearpool", "danger")],
-        [("🌐 Pool Status", "pool", "primary"), ("📡 Refresh Proxies", "refresh", "primary")],
-        [("⚙️ Auto-Check: {'ON' if ac else 'OFF'}", "autocheck", "primary"), ("🧵 Set Threads: {THREADS}", "setthreads", "primary")],
-        [("📊 Status", "status", "primary"), ("📈 Proxy Settings", "proxysettings", "primary")],
-        [("🤖 Oxaam Fetch", "oxaam", "success"), ("📺 TV Activation", "tv", "success")],
+        [("❌ Disable Proxies", "disableproxies", "danger"), ("📥 Upload Proxies", "addpx", "success")],
+        [("🧹 Clear Proxies", "clearpool", "danger"), ("🧵 Set Threads", "setthreads", "primary")],
         [("⬅️ Back", "menu", "danger")],
     ]
     return header, rows
@@ -2174,19 +2151,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     uid = user.id
     text = msg.text.strip()
-    # Hybrid ReplyKeyboard handling: map button text to callback actions
-    # Do this BEFORE pending, so Back/Menu buttons work even while pending
     reply_action = REPLY_TEXT_MAP.get(text)
 
     if reply_action:
-        # Clear pending if user pressed a main menu button (acts like on_button)
-        # But keep pending for some? For now clear pending and handle as button
         clear_pending(uid)
-        # Build a fake callback context for reply actions
-        # Reuse on_button logic by constructing minimal handling here
-        # Instead of calling on_button, handle directly
         is_owner = is_admin(uid, getattr(user, "username", None))
-        # Common reply actions
         if reply_action == "menu":
             try:
                 nm = getattr(user, "first_name", None) or str(uid)
@@ -2197,110 +2166,44 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 mtext, rows = menu_main(uid)
                 await reply_menu(msg, mtext, rows)
             return
+        elif reply_action == "check":
+            set_pending(uid, "creds")
+            await msg.reply_text("💎 <b>Check Account</b>\n\nSend <code>EMAIL:PASS</code> — one or many lines.\nExample: <code>user@gmail.com:pass123</code>", parse_mode=ParseMode.HTML, reply_markup=_build_reply_kb([["⬅️ Main Menu"]]))
+            return
+        elif reply_action == "file":
+            await msg.reply_text("📂 <b>Check File</b>\n\nSend me your <code>.txt</code> / <code>.csv</code> file with combos.", parse_mode=ParseMode.HTML, reply_markup=_build_reply_kb([["⬅️ Main Menu"]]))
+            return
         elif reply_action == "help":
             await msg.reply_text(help_text(), parse_mode=ParseMode.HTML, reply_markup=main_reply_kb(is_owner))
             return
-        elif reply_action in ("check", "file"):
-            if reply_action == "check":
-                set_pending(uid, "creds")
-                await msg.reply_text(
-                    "📝 <b>Check Account</b>\n\nSend me one or more lines in this format:\n<code>EMAIL:PASS</code>\n\nExample: <code>user@gmail.com:mypassword</code>",
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=_build_reply_kb([["⬅️ Main Menu"]])
-                )
-            else:
-                set_pending(uid, "file")
-                await msg.reply_text("📂 <b>Check File</b>\n\nSend me a <code>.txt / .log / .json / .csv</code> file.", parse_mode=ParseMode.HTML, reply_markup=_build_reply_kb([["⬅️ Main Menu"]]))
-            return
-        elif reply_action == "mode":
-            new = not STORE.get_premium_only(uid)
-            STORE.set_premium_only(uid, new)
-            await msg.reply_text(f"🎛 Output Mode: <b>{'Premium Only' if new else 'All Working'}</b>", parse_mode=ParseMode.HTML, reply_markup=main_reply_kb(is_owner))
-            return
-        elif reply_action == "myaccess":
-            await msg.reply_text("✅ <b>Free Access</b>\n\n🎉 This bot is <b>FREE</b> — no code needed!\nJust tap <b>💎 Check Account</b> or <b>📂 Check File</b>.", parse_mode=ParseMode.HTML, reply_markup=main_reply_kb(is_owner))
-            return
-
-        elif reply_action == "opanel":
-            text, rows = menu_owner()
-            await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=owner_reply_kb())
-            return
-        elif reply_action == "genpick":
-            await msg.reply_text("🔑 <b>Generate Code</b>\n\nPick a duration 👇", parse_mode=ParseMode.HTML, reply_markup=gen_reply_kb())
-            return
-        elif reply_action in ("gen_24", "gen_48", "gen_72"):
-            hours = int(reply_action.split("_")[1])
-            code = generate_code()
-            exp = STORE.add_code(code, hours)
-            await msg.reply_text(f"✅ <b>Code Generated!</b>\n\n🔑 <code>{code}</code>\n⏳ Valid: <code>{hours}h</code> (until {fmt_dt(exp)})", parse_mode=ParseMode.HTML, reply_markup=owner_reply_kb())
-            return
         elif reply_action == "status":
-            await msg.reply_text(status_text(), parse_mode=ParseMode.HTML, reply_markup=owner_reply_kb())
+            await msg.reply_text(status_text(), parse_mode=ParseMode.HTML, reply_markup=main_reply_kb(is_owner))
             return
-        elif reply_action == "refresh":
-            await msg.reply_text("🔄 <b>Refreshing proxies...</b>\n⏳ Please wait", parse_mode=ParseMode.HTML)
+        elif reply_action == "proxysettings":
+            ptext, rows = menu_owner()
+            await msg.reply_text(ptext, parse_mode=ParseMode.HTML, reply_markup=owner_reply_kb())
             try:
-                await asyncio.to_thread(refresh_live_proxies, True)
-                await msg.reply_text(f"✅ <b>Live proxies ready:</b> <code>{proxy_count()}</code>", parse_mode=ParseMode.HTML, reply_markup=owner_reply_kb())
-            except Exception as e:
-                await msg.reply_text(f"❌ Error: <code>{esc(str(e)[:120])}</code>", parse_mode=ParseMode.HTML)
-            return
-        elif reply_action == "setthreads":
-            try:
-                val = int(text.strip())
-                if 10 <= val <= 300:
-                    THREADS = val
-                try:
-                    STORE.set_setting("threads", val)
-                except Exception:
-                    pass
-                    await msg.reply_text(f"✅ <b>Threads Set:</b> <code>{THREADS}</code>\nSpeed ~<code>{THREADS*4} cpm</code>", parse_mode=ParseMode.HTML, reply_markup=owner_reply_kb())
-                else:
-                    await msg.reply_text("❌ Threads must be 10-300", parse_mode=ParseMode.HTML)
+                await reply_menu(msg, ptext, rows)
             except Exception:
-                await msg.reply_text("❌ Send a number 10-300", parse_mode=ParseMode.HTML)
+                pass
             return
-
-        elif reply_action == "pool":
-            ac = bool(STORE.get_setting("auto_check", True))
-            text = f"🌐 <b>Proxy Pool</b>\n━━━━━━━━━━━━━━━━━━━━━\n📥 Pool (user-added): <code>{pool_size()}</code>\n🌐 Live in use: <code>{proxy_count()}</code>\n⚙️ Auto-Check: <code>{'ON' if ac else 'OFF'}</code>\n🔁 Auto Refresh: <code>{PROXY_REFRESH_MINUTES} min</code>"
-            await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=owner_reply_kb())
+        elif reply_action in ("genpick", "gen_24", "gen_48", "gen_72", "oxaam", "tv", "pool", "autocheck", "refresh"):
+            await msg.reply_text("ℹ️ <b>Just a Checker</b> — that feature was removed.\nUse <b>💎 Check Account</b> / <b>📂 Check File</b>.", parse_mode=ParseMode.HTML, reply_markup=main_reply_kb(is_owner))
             return
         elif reply_action == "addpx":
             set_pending(uid, "addpx")
-            await msg.reply_text("📥 <b>Add Proxies</b>\n\nPaste your proxy lines (one per line):\n<code>host:port</code> or <code>user:pass:host:port</code> or full <code>http://…</code> urls.\n\nMax " + str(MAX_PASTED_PROXIES) + " lines.", parse_mode=ParseMode.HTML, reply_markup=_build_reply_kb([["⬅️ Main Menu"]]))
+            await msg.reply_text("📥 <b>Upload Proxies</b>\n\nPaste lines (one per line):\n<code>host:port</code> or <code>user:pass@ip:port</code>\nMax " + str(MAX_PASTED_PROXIES) + " lines.", parse_mode=ParseMode.HTML, reply_markup=_build_reply_kb([["⬅️ Main Menu"]]))
             return
         elif reply_action == "clearpool":
             await asyncio.to_thread(clear_pool)
-            await msg.reply_text("🧹 <b>Pool cleared.</b> Live list reset too.", parse_mode=ParseMode.HTML, reply_markup=owner_reply_kb())
+            await msg.reply_text("🧹 <b>Pool cleared.</b>", parse_mode=ParseMode.HTML, reply_markup=main_reply_kb(is_owner))
             return
-        elif reply_action == "autocheck":
-            new = not bool(STORE.get_setting("auto_check", True))
-            STORE.set_setting("auto_check", new)
-            await msg.reply_text(f"⚙️ <b>Auto-Check Proxies: {'ON' if new else 'OFF'}</b>", parse_mode=ParseMode.HTML, reply_markup=owner_reply_kb())
+        elif reply_action == "setthreads":
+            await msg.reply_text("🧵 <b>Set Threads</b> — use inline: <b>⚙️ Proxy Settings</b> → <b>Set Threads</b>", parse_mode=ParseMode.HTML, reply_markup=main_reply_kb(is_owner))
             return
-        elif reply_action == "oxaam":
-            await msg.reply_text("🤖 <b>Oxaam Fetch</b>\n⏳ Pulling a fresh account...", parse_mode=ParseMode.HTML)
-            try:
-                email, pw, res = await asyncio.to_thread(_oxaam_do)
-            except Exception as e:
-                await msg.reply_text(f"❌ Error: <code>{esc(str(e)[:120])}</code>", parse_mode=ParseMode.HTML, reply_markup=owner_reply_kb())
-                return
-            if not email:
-                await msg.reply_text("❌ Could not extract from Oxaam. Try again later.", parse_mode=ParseMode.HTML, reply_markup=owner_reply_kb())
-                return
-            bump_checks(1 if (res and res["st"] == "hit") else 0)
-            await msg.reply_text(_oxaam_report(email, pw, res), parse_mode=ParseMode.HTML, reply_markup=owner_reply_kb())
-            return
-        elif reply_action == "tv":
-            set_pending(uid, "tv_email")
-            await msg.reply_text("📺 <b>TV Activation — Step 1/2</b>\n\nSend me <code>EMAIL:PASS</code> of the account.", parse_mode=ParseMode.HTML, reply_markup=_build_reply_kb([["⬅️ Main Menu"]]))
-            return
-        # fallback: if we handled, return already
-        # if not handled, fall through to normal pending logic
     pending = get_pending(uid)
 
-    # ---------- active input flows (started by a button) ----------
+    # ---------- active input flows ----------
     if pending:
         kind = pending["kind"]
 
@@ -2309,8 +2212,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             creds = extract_credentials(text)
             if not creds:
                 await reply_menu(msg,
-                    "❌ I couldn't find any credentials there.\n"
-                    "Format: <code>EMAIL:PASS</code>",
+                    "❌ No credentials found.\nFormat: <code>EMAIL:PASS</code>",
                     [[("🔁 Try Again", "check", "success"), ("⬅️ Menu", "menu", "danger")]])
                 return
             if len(creds) > MAX_PASTED_CREDS:
@@ -2329,303 +2231,66 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(lines) > MAX_PASTED_PROXIES:
                 await reply_menu(msg, f"❌ Too many lines (max {MAX_PASTED_PROXIES}).",
                                  [[("📥 Try Again", "addpx", "primary"),
-                                   ("⬅️ Back", "opanel", "danger")]])
+                                   ("⬅️ Back", "proxysettings", "danger")]])
                 return
             ac = bool(STORE.get_setting("auto_check", True))
             added, invalid = await asyncio.to_thread(add_proxies_to_pool, lines, ac)
-            status = "🔎 Auto-check started in background..." if ac else "Added (untested)."
+            status = "🔎 Auto-check in background..." if ac else "Added."
             await reply_menu(
                 msg,
-                f"📥 <b>Proxy Pool Updated</b>\n\n"
-                f"➕ Added: <code>{added}</code> | ⚠️ Invalid: <code>{invalid}</code> | "
-                f"🌐 Pool total: <code>{pool_size()}</code>\n\n{status}",
-                [[("🌐 Pool Status", "pool", "primary"), ("⬅️ Back", "opanel", "danger")]],
+                f"📥 <b>Proxies Added</b>\n\n➕ <code>{added}</code> | ⚠️ <code>{invalid}</code> | Pool: <code>{pool_size()}</code>\n\n{status}",
+                [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Back", "proxysettings", "danger")]],
             )
             return
 
-        if kind == "tv_email":
-            m = EMAIL_PASS_RE.search(text)
-            if not m:
-                await reply_menu(msg, "❌ That doesn't look like <code>EMAIL:PASS</code>.",
-                                 [[("🔁 Try Again", "tv", "success"), ("⬅️ Back", "opanel", "danger")]])
-                return
-            set_pending(uid, "tv_code", email=m.group(1), pw=m.group(2))
-            await reply_menu(msg,
-                "📺 <b>TV Activation — Step 2/2</b>\n\n"
-                "Now send me the <b>TV code</b> shown on the screen.",
-                [[("⬅️ Cancel", "opanel", "danger")]])
-            return
-
-        if kind == "tv_code":
+        if kind in ("tv_email", "tv_code"):
             clear_pending(uid)
-            email, pw = pending["email"], pending["pw"]
-            note = await msg.reply_text("📺 Logging in & activating TV...")
-            ok, err = await asyncio.to_thread(_tv_do, email, pw, text.upper())
-            if ok:
-                await note.edit_text(
-                    "✅ <b>TV ACTIVATION SUCCESSFUL!</b>\n\n"
-                    "Now open/restart the TV app to sign in.",
-                    parse_mode=ParseMode.HTML)
-            else:
-                await note.edit_text(f"❌ TV activation failed: <code>{esc(err)}</code>",
-                                     parse_mode=ParseMode.HTML)
-            await reply_menu(msg, "📺 Done!",
-                             [[("🔁 Again", "tv", "success"), ("⬅️ Menu", "menu", "danger")]])
+            await msg.reply_text("ℹ️ TV removed — just a checker now.", parse_mode=ParseMode.HTML, reply_markup=main_reply_kb(_is_owner(uid)))
             return
 
-        if kind == "file":
-            await reply_menu(msg,
-                "📂 Send me the <b>file itself</b> (as a document), not text.",
-                [[("🔁 Try Again", "file", "primary"), ("⬅️ Menu", "menu", "danger")]])
-            return
+        clear_pending(uid)
 
-    # ---------- no active flow ----------
-    if text.startswith("/"):
-        if _has_access(uid):
-            try:
-                nm = getattr(user, "first_name", None) or str(uid)
-                mtext = welcome_premium_text(uid, nm)
-                _, rows = menu_main(uid)
-                await reply_menu(msg, mtext, rows)
-                return
-            except Exception:
-                pass
-        mtext, rows = menu_main(uid)
-        await reply_menu(msg, "🔘 This bot is 100% button-driven — pick an option below 👇\n\n" + mtext, rows)
-        return
-
+    # plain credential paste without button
     creds = extract_credentials(text)
     if creds:
         if len(creds) > MAX_PASTED_CREDS:
-            await reply_menu(msg,
-                f"❌ Too many lines (max {MAX_PASTED_CREDS}). Send a file instead.",
-                [[("📂 Check File", "file", "primary"), ("⬅️ Menu", "menu", "danger")]])
+            await reply_menu(msg, f"❌ Too many lines (max {MAX_PASTED_CREDS}). Send a file.", [[("📂 Check File", "file", "primary")]])
             return
         await _run_and_report(msg, uid, text)
         return
-
-    # premium fallback
-    if _has_access(uid):
-        try:
-            nm = getattr(user, "first_name", None) or str(uid)
-            mtext = welcome_premium_text(uid, nm)
-            _, rows = menu_main(uid)
-            await reply_menu(msg, mtext, rows)
-            return
-        except Exception:
-            pass
     mtext, rows = menu_main(uid)
-    await reply_menu(msg, mtext, rows)
+    await reply_menu(msg, "🔘 Send <code>EMAIL:PASS</code> or use buttons 👇\n\n" + mtext, rows)
 
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    msg = update.effective_message
-    if not user or not msg or not msg.document:
-        return
-    uid = user.id
-    pending = get_pending(uid)
-
-    # Handle proxy file upload when in addpx state
-    if pending and pending.get("kind") == "addpx":
-        clear_pending(uid)
-        doc = msg.document
-        name = (doc.file_name or "unknown.txt").lower()
-        if doc.file_size and doc.file_size > MAX_FILE_MB * 1024 * 1024:
-            await reply_menu(msg, f"❌ File too large (max <code>{MAX_FILE_MB} MB</code>).",
-                             [[("📥 Try Again", "addpx", "primary"), ("⬅️ Menu", "menu", "danger")]])
-            return
-        note = await msg.reply_text("📥 Downloading proxy file...")
-        try:
-            tg_file = await context.bot.get_file(doc.file_id)
-            tmp_path = Path(tempfile.gettempdir()) / f"proxy_{uid}_{int(time.time())}.txt"
-            await tg_file.download_to_drive(str(tmp_path))
-            text = tmp_path.read_text(encoding="utf-8", errors="ignore")
-            tmp_path.unlink(missing_ok=True)
-        except Exception as e:
-            await note.edit_text(f"❌ Download failed: <code>{esc(str(e)[:120])}</code>", parse_mode=ParseMode.HTML)
-            return
-        lines = [l.strip() for l in text.splitlines() if l.strip()]
-        if not lines:
-            await note.edit_text("❌ No proxies found in file.", parse_mode=ParseMode.HTML)
-            return
-        if len(lines) > MAX_PASTED_PROXIES:
-            await note.edit_text(f"❌ Too many lines (max {MAX_PASTED_PROXIES}).", parse_mode=ParseMode.HTML)
-            return
-        ac = bool(STORE.get_setting("auto_check", True))
-        await note.edit_text(f"🔍 Testing <code>{len(lines)}</code> proxies... (auto-check {'ON' if ac else 'OFF'})", parse_mode=ParseMode.HTML)
-        added, invalid = await asyncio.to_thread(add_proxies_to_pool, lines, ac)
-        status = "🔍 Auto-check started..." if ac else "Added (live check skipped)."
-        await note.edit_text(
-            f"📥 <b>Proxies Uploaded</b>\n\n✅ Added: <code>{added}</code> • ⚠️ Invalid: <code>{invalid}</code>\n"
-            f"📦 Pool: <code>{pool_size()}</code> • 🌐 Live: <code>{proxy_count()}</code>\n\n{status}",
-            parse_mode=ParseMode.HTML
-        )
-        await reply_menu(msg, f"✅ Proxies ready! Pool: <code>{pool_size()}</code> • Live: <code>{proxy_count()}</code>",
-                         [[("🧪 Test Proxies", "proxysettings", "success"), ("💎 Check Account", "check", "success")], [("⬅️ Menu", "menu", "danger")]])
-        return
-
-    if pending and pending["kind"] != "file":
-        await msg.reply_text(
-            "⏳ I'm waiting for a different input — press ⬅️ Back, or send the right thing."
-        )
-        return
-    if pending:
-        clear_pending(uid)
-    elif not _has_access(uid):
-        text, rows = menu_main(uid)
-        await reply_menu(msg, text, rows)
-        return
-
-    doc = msg.document
-    name = (doc.file_name or "unknown.txt").lower()
-    if not name.endswith((".txt", ".log", ".json", ".csv")):
-        await reply_menu(msg, "❌ Only <code>.txt / .log / .json / .csv</code> files allowed.",
-                         [[("📂 Try Again", "file", "primary"), ("⬅️ Menu", "menu", "danger")]])
-        return
-    if doc.file_size and doc.file_size > MAX_FILE_MB * 1024 * 1024:
-        await reply_menu(msg, f"❌ File too large (max <code>{MAX_FILE_MB} MB</code>).",
-                         [[("📂 Try Again", "file", "primary"), ("⬅️ Menu", "menu", "danger")]])
-        return
-
-    note = await msg.reply_text("📥 Downloading file...")
-    try:
-        tg_file = await context.bot.get_file(doc.file_id)
-        tmp_path = Path(tempfile.gettempdir()) / f"crunchy_{uid}_{int(time.time())}.txt"
-        await tg_file.download_to_drive(str(tmp_path))
-        text = tmp_path.read_text(encoding="utf-8", errors="ignore")
-        tmp_path.unlink(missing_ok=True)
-    except Exception as e:
-        await note.edit_text(f"❌ Download failed: <code>{esc(str(e)[:120])}</code>",
-                             parse_mode=ParseMode.HTML)
-        return
-    if not text.strip():
-        await note.edit_text("❌ File is empty.")
-        return
-    await _run_and_report(msg, uid, text)
-
-# AIO service names for "coming soon" messages
-_SVC_NAMES = {
-    "svc_crunchy": "🍥 CRUNCHYROLL",
-}
 
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global THREADS
     q = update.callback_query
-    if not q or not q.message:
+    if not q:
         return
-    uid = q.from_user.id
+    user = q.from_user
+    uid = user.id if user else 0
     data = q.data or ""
-    await q.answer()
-    clear_pending(uid)  # any button press abandons the previous input flow
     m = q.message
-
-    # Premium AIO services — not yet implemented, show premium "coming soon" card
-    if data.startswith("svc_"):
-        name = _SVC_NAMES.get(data, data)
-        await edit_menu(m,
-            f"🌟 <b>{esc(name)} — Coming Soon</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n"
-            "This module is part of the <b>BlazeNXT</b> suite.\n"
-            "Currently only <b>🍥 CRUNCHYROLL</b> is active.\n\n"
-            "👉 Tap <b>🍥 CRUNCHYROLL</b> to check Crunchyroll accounts.\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n"
-            "🔥 <b>BlazeNXT</b>",
-            [[("🍥 CRUNCHYROLL", "check", "success"), ("⬅️ Back", "menu", "danger")]])
-        return
+    await q.answer()
 
     if data == "menu":
-        # try to get user display name for premium header
-        try:
-            nm = q.from_user.first_name or str(uid)
-        except Exception:
-            nm = str(uid)
-        # rebuild premium header with name
-        if _has_access(uid):
-            try:
-                text = welcome_premium_text(uid, nm)
-                _, rows = menu_main(uid)
-                await edit_menu(m, text, rows)
-                return
-            except Exception:
-                pass
         text, rows = menu_main(uid)
         await edit_menu(m, text, rows)
-
+        return
     elif data == "help":
         await edit_menu(m, help_text(), [[("⬅️ Back", "menu", "danger")]])
-
-    elif data in ("check", "file"):
-        if data == "check":
-            set_pending(uid, "creds")
-            text = (
-                "📝 <b>Check Account</b>\n\n"
-                "Send me one or more lines in this format:\n"
-                "<code>EMAIL:PASS</code>\n\n"
-                "Example: <code>user@gmail.com:mypassword</code>"
-            )
-        else:
-            set_pending(uid, "file")
-            text = "📂 <b>Check File</b>\n\nSend me a <code>.txt / .log / .json / .csv</code> file."
-        await edit_menu(m, text, [[("⬅️ Back", "menu", "danger")]])
-
-    elif data == "mode":
-        new = not STORE.get_premium_only(uid)
-        STORE.set_premium_only(uid, new)
-        text, rows = menu_main(uid)
-        text = f"🎛 Output Mode: <b>{'Premium Only' if new else 'All Working'}</b>\n\n" + text
-        await edit_menu(m, text, rows)
-
-    elif data == "myaccess":
-        if is_admin(uid, getattr(q.from_user, "username", None)):
-            text = "👑 <b>Owner Access</b>\n\nUnlimited."
-        else:
-            ok, exp = STORE.has_access(uid)
-            text = f"✅ <b>Access Active</b>\n\n⏳ Expires: <code>{fmt_dt(exp)}</code>"
-        await edit_menu(m, text,
-                        [[("🎛 Output Mode", "mode", "primary"), ("⬅️ Back", "menu", "danger")]])
-
-
-
-    elif data == "opanel":
-        text, rows = menu_owner()
-        await edit_menu(m, text, rows)
-
-    elif data == "genpick":
-        rows = [
-            [("⏳ 24 Hours", "gen_24", "success"), ("⏳ 48 Hours", "gen_48", "success")],
-            [("⏳ 72 Hours", "gen_72", "success")],
-            [("⬅️ Back", "opanel", "danger")],
-        ]
-        await edit_menu(m, "🔑 <b>Generate Code</b>\n\nPick a duration 👇", rows)
-
-    elif data in ("gen_24", "gen_48", "gen_72"):
-        hours = int(data.split("_")[1])
-        code = generate_code()
-        exp = STORE.add_code(code, hours)
-        rows = [[("🔁 New Code", "genpick", "success"), ("⬅️ Menu", "menu", "danger")]]
-        await edit_menu(m,
-            f"✅ <b>Code Generated!</b>\n\n🔑 <code>{code}</code>\n"
-            f"⏳ Valid: <code>{hours}h</code> (until {fmt_dt(exp)})\n\n"
-            "Send it to the user — they redeem it with the 🎫 button.",
-            rows)
-
+        return
+    elif data == "check":
+        set_pending(uid, "creds")
+        await edit_menu(m, "💎 <b>Check Account</b>\n\nSend <code>EMAIL:PASS</code> — one or many lines.\nExample: <code>user@gmail.com:pass123</code>", [[("⬅️ Back", "menu", "danger")]])
+        return
+    elif data == "file":
+        await edit_menu(m, "📂 <b>Check File</b>\n\nSend me your file.", [[("⬅️ Back", "menu", "danger")]])
+        return
     elif data == "status":
-        await edit_menu(m, status_text(),
-                        [[("📡 Refresh Proxies", "refresh", "primary"),
-                          ("⬅️ Back", "opanel", "danger")]])
-
-    elif data == "refresh":
-        await edit_menu(m, "🔄 <b>Refreshing proxies...</b>\n⏳ Please wait", None)
-        try:
-            await asyncio.to_thread(refresh_live_proxies, True)
-            await edit_menu(m, f"✅ <b>Live proxies ready:</b> <code>{proxy_count()}</code>",
-                            [[("⬅️ Back", "opanel", "danger")]])
-        except Exception as e:
-            await edit_menu(m, f"❌ Error: <code>{esc(str(e)[:120])}</code>",
-                            [[("⬅️ Back", "opanel", "danger")]])
-
+        await edit_menu(m, status_text(), [[("⬅️ Back", "menu", "danger")]])
+        return
     elif data == "proxysettings":
-        # Proxy Settings like RESIROX — Status ON, Loaded, Threads, Upload etc
         ac = bool(STORE.get_setting("auto_check", True))
         status = "🟢 ON" if proxy_count() > 0 else "🔴 OFF"
         loaded = pool_size()
@@ -2638,73 +2303,40 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🧵 Threads: <code>{THREADS}</code> (max 300)\n"
             f"⚙️ Auto-Check: <code>{'ON' if ac else 'OFF'}</code>\n"
             "━━━━━━━━━━━━━━━━━━━━━\n"
-            "📤 Upload proxies — any provider. Live check\n"
-            "in chat. <i>Txt form always</i>\n"
-            "Format: <code>user:pass@ip:port</code> or <code>ip:port</code>\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n"
-            "Manage proxies with the buttons below"
+            "Format: <code>user:pass@ip:port</code> or <code>ip:port</code>"
         )
         await edit_menu(m, text,
                         [[("🔵 Disable Proxies", "disableproxies", "primary"), ("📤 Upload Proxies", "addpx", "success")],
                          [("🧵 Set Threads", "setthreads", "primary"), ("🧹 Clear Proxies", "clearpool", "danger")],
-                         [("⬅️ Back", "opanel", "danger")]])
+                         [("⬅️ Back", "menu", "danger")]])
         return
-
+    elif data == "opanel":
+        text, rows = menu_owner()
+        await edit_menu(m, text, rows)
+        return
     elif data == "pool":
-        ac = bool(STORE.get_setting("auto_check", True))
-        text = (
-            "🌐 <b>Proxy Pool</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📥 Pool (user-added): <code>{pool_size()}</code>\n"
-            f"🌐 Live in use: <code>{proxy_count()}</code>\n"
-            f"⚙️ Auto-Check: <code>{'ON' if ac else 'OFF'}</code>\n"
-            f"🔁 Auto Refresh: <code>{PROXY_REFRESH_MINUTES} min</code>"
-        )
-        await edit_menu(m, text,
-                        [[("📥 Add Proxies", "addpx", "primary"),
-                          ("🧹 Clear Pool", "clearpool", "danger")],
-                         [("⬅️ Back", "opanel", "danger")]])
-
+        await edit_menu(m, "ℹ️ Use <b>⚙️ Proxy Settings</b>.", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Back", "menu", "danger")]])
+        return
     elif data == "addpx":
         set_pending(uid, "addpx")
-        await edit_menu(m,
-            "📥 <b>Add Proxies</b>\n\n"
-            "Paste your proxy lines (one per line):\n"
-            "<code>host:port</code> or <code>user:pass:host:port</code> "
-            "or full <code>http://…</code> urls.\n\n"
-            "Max " + str(MAX_PASTED_PROXIES) + " lines.",
-            [[("⬅️ Back", "opanel", "danger")]])
-
+        await edit_menu(m, "📥 <b>Upload Proxies</b>\n\nPaste lines (one per line):\n<code>host:port</code> or <code>user:pass@ip:port</code>", [[("⬅️ Back", "proxysettings", "danger")]])
+        return
     elif data == "disableproxies":
-        # Disable proxies — clear live but keep pool
         with PROXY_LOCK:
             LIVE_PROXIES.clear()
-        await edit_menu(m, "🔵 <b>Proxies Disabled</b>\n\n🌐 Live: <code>0</code> • Pool kept.", [[("📤 Upload Proxies", "addpx", "success"), ("⬅️ Back", "proxysettings", "danger")]])
+        await edit_menu(m, "🔵 <b>Proxies Disabled</b>\n🌐 Live: <code>0</code> • Pool kept.", [[("📤 Upload Proxies", "addpx", "success"), ("⬅️ Back", "proxysettings", "danger")]])
         return
-
     elif data == "clearpool":
         await asyncio.to_thread(clear_pool)
         text, rows = menu_owner()
-        await edit_menu(m, "🧹 <b>Pool cleared.</b> Live list reset too.\n\n" + text, rows)
-
+        await edit_menu(m, "🧹 <b>Pool cleared.</b>\n\n" + text, rows)
+        return
     elif data == "setthreads":
-        # Set Threads like RESIROX — 50/100/200/300
-        await edit_menu(m, f"🧵 <b>Set Threads</b>\n\nCurrent: <code>{THREADS}</code> • Max 300\n\nChoose threads (higher = faster but more proxy load):",
+        await edit_menu(m, f"🧵 <b>Set Threads</b>\nCurrent: <code>{THREADS}</code> • Max 300",
                         [[("🧵 50", "threads_50", "primary"), ("🧵 100", "threads_100", "success")],
                          [("🧵 200", "threads_200", "primary"), ("🧵 300", "threads_300", "success")],
                          [("⬅️ Back", "proxysettings", "danger")]])
         return
-
-    elif data == "autocheck":
-        new = not bool(STORE.get_setting("auto_check", True))
-        STORE.set_setting("auto_check", new)
-        extra = ("ON = added proxies are auto-tested in the background and only live ones are used.\n"
-                 if new else "OFF = added proxies are used immediately without testing.\n")
-        await edit_menu(m,
-            f"⚙️ <b>Auto-Check Proxies: {'ON' if new else 'OFF'}</b>\n\n"
-            f"{extra}Added proxies are saved to disk and survive restarts.",
-            [[("⬅️ Back", "opanel", "danger")]])
-
     elif data.startswith("threads_"):
         try:
             val = int(data.split("_")[1])
@@ -2714,36 +2346,16 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     STORE.set_setting("threads", val)
                 except Exception:
                     pass
-                await edit_menu(m, f"✅ <b>Threads Set</b>\n\n🧵 Now: <code>{THREADS}</code> • Speed ~<code>{THREADS*4} cpm</code> est.\n\nAccuracy maintained. Enjoy 500-600 cpm with good proxies!",
-                                [[("🔵 Proxy Settings", "proxysettings", "primary"), ("⬅️ Back", "menu", "danger")]])
+                await edit_menu(m, f"✅ <b>Threads Set</b>\n🧵 Now: <code>{THREADS}</code> • ~<code>{THREADS*4} cpm</code>", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Back", "menu", "danger")]])
                 return
         except Exception:
             pass
-        await edit_menu(m, "❌ Invalid threads value.", [[("⬅️ Back", "proxysettings", "danger")]])
+        await edit_menu(m, "❌ Invalid.", [[("⬅️ Back", "proxysettings", "danger")]])
+        return
+    elif data in ("genpick", "gen_24", "gen_48", "gen_72", "refresh", "autocheck", "oxaam", "tv"):
+        await edit_menu(m, "ℹ️ <b>Just a Checker</b> — that feature was removed.\nUse <b>💎 Check Account</b> / <b>📂 Check File</b>.", [[("⬅️ Back", "menu", "danger")]])
         return
 
-    elif data == "oxaam":
-        await edit_menu(m, "🤖 <b>Oxaam Fetch</b>\n⏳ Pulling a fresh account...", None)
-        try:
-            email, pw, res = await asyncio.to_thread(_oxaam_do)
-        except Exception as e:
-            await edit_menu(m, f"❌ Error: <code>{esc(str(e)[:120])}</code>",
-                            [[("🔁 Again", "oxaam", "success"), ("⬅️ Back", "opanel", "danger")]])
-            return
-        if not email:
-            await edit_menu(m, "❌ Could not extract from Oxaam. Try again later.",
-                            [[("🔁 Again", "oxaam", "success"), ("⬅️ Back", "opanel", "danger")]])
-            return
-        bump_checks(1 if (res and res["st"] == "hit") else 0)
-        await edit_menu(m, _oxaam_report(email, pw, res),
-                        [[("🔁 Again", "oxaam", "success"), ("⬅️ Back", "opanel", "danger")]])
-
-    elif data == "tv":
-        set_pending(uid, "tv_email")
-        await edit_menu(m,
-            "📺 <b>TV Activation — Step 1/2</b>\n\n"
-            "Send me <code>EMAIL:PASS</code> of the account.",
-            [[("⬅️ Back", "opanel", "danger")]])
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error("Unhandled error: %s", context.error, exc_info=context.error)
