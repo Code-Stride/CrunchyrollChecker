@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-CrunchyrollChecker — UNIFIED PREMIUM BOT v11 — BlazeNXT UPGRADED
+CrunchyrollChecker — UNIFIED PREMIUM BOT V1 — BlazeNXT
 ====================================================================
-Major upgrades in v11:
+v1:
   • Instant startup — background proxy refresh (fixes 5min delay)
   • Flask health server for Railway PORT binding (/health, /stats, /)
   • Proxy v2: scoring persistence, URL import, smart ranking, fallback
@@ -2160,7 +2160,7 @@ def status_text() -> str:
     ac = bool(STORE.get_setting("auto_check", True)) if STORE else True
     daily = load_daily_stats()
     return (
-        "📊 <b>Bot Status v11 UPGRADED</b>\n"
+        "📊 <b>Bot Status</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
         f"👑 Owner: <code>{esc(OWNER_USERNAME)}</code>\n"
         f"🌐 Live Proxies: <code>{proxy_count()}</code> | Pool: <code>{pool_size()}</code>\n"
@@ -2182,7 +2182,7 @@ def status_text() -> str:
 def help_text() -> str:
     return (
         "╭────────────────────────╮\n"
-        "│  📖 <b>HELP v11</b>  │\n"
+        "│  📖 <b>HELP</b>  │\n"
         "╰────────────────────────╯\n"
         "🔥 <b>Crunchyroll Checker</b> — Powerful, Secure, Fast\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
@@ -2236,7 +2236,7 @@ def help_text() -> str:
         "│ Daily stats • History • CPM smoothing\n"
         "└────────────────────────┘\n"
         "╭────────────────────────╮\n"
-        "│  🔥 <b>CRUNCHYROLL v11</b> • UPGRADED  │\n"
+        "│  🔥 <b>CRUNCHYROLL</b> • UPGRADED  │\n"
         "╰────────────────────────╯\n"
         f"{DEVELOPER_BRANDING} • 👤 Owner: <code>{esc(OWNER_USERNAME)}</code>"
     )
@@ -2259,7 +2259,7 @@ def welcome_premium_text(uid: int, name: str) -> str:
     daily = load_daily_stats()
     return (
         "╭────────────────────────╮\n"
-        "│  🔥 <b>CRUNCHYROLL v11</b> 🔥  │\n"
+        "│  🔥 <b>CRUNCHYROLL</b> 🔥  │\n"
         "│  <i>Premium Checker • UPGRADED</i>   │\n"
         "╰────────────────────────╯\n"
         f"👋 Hey <b>{esc(name)}</b>\n"
@@ -2400,7 +2400,7 @@ def _is_owner(uid: int, username: str = None) -> bool:
         pass
     return False
 
-# ===================== MENU DEFINITIONS v11 =====================
+# ===================== MENU DEFINITIONS v1 =====================
 AIO_SERVICES = [
     [("🍥 CRUNCHYROLL", "check", "success")],
 ]
@@ -2409,7 +2409,7 @@ def menu_main(uid: int, username: str = None):
     try:
         header = welcome_premium_text(uid, str(username or uid))
     except Exception:
-        header = "╭────────────────────────╮\n│  🔥 <b>CRUNCHYROLL v11</b> 🔥  │\n╰────────────────────────╯"
+        header = "╭────────────────────────╮\n│  🔥 <b>CRUNCHYROLL</b> 🔥  │\n╰────────────────────────╯"
     rows = [
         [("💎 Check Account", "check", "success"), ("📂 Check File", "file", "primary")],
         [("🧹 Clean Combos", "cleancombos", "primary"), ("🛠️ Tools", "tools", "primary")],
@@ -2428,7 +2428,7 @@ def menu_owner():
     auto_on = bool(STORE.get_setting("auto_proxy", True)) if STORE else True
     daily = load_daily_stats()
     header = (
-        "⚙️ <b>Proxy Settings v11 — Auto Load 100x Fast</b>\n"
+        "⚙️ <b>Proxy Settings — Auto Load 100x Fast</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
         f"📊 Status: <code>{'ON' if proxy_count() else 'OFF'}</code> • 📦 Pool: <code>{pool_size()}</code> • 🌐 Live: <code>{proxy_count()}</code>\n"
         f"   ↳ Auto: <code>{len(AUTO_PROXY_URLS)}</code> • Manual: <code>{len(MANUAL_PROXY_URLS)}</code> • Scores: <code>{len(PROXY_SCORES)}</code>\n"
@@ -2450,7 +2450,7 @@ def menu_owner():
 
 def menu_tools():
     header = (
-        "🛠️ <b>Tools — v11 UPGRADED</b>\n"
+        "🛠️ <b>Tools</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
         "🧹 Clean Duplicates • 📊 Stats • 📜 History\n"
         "🌐 Proxy Tools • 📁 Export • ⚙️ Settings\n"
@@ -2527,7 +2527,7 @@ async def send_hit_cards(msg, entries: List[dict], cap: int = MAX_HIT_CARDS) -> 
                 return sent
     return sent
 
-# ===================== CHECK RUNNER v11 =====================
+# ===================== CHECK RUNNER v1 =====================
 async def _run_and_report(msg, uid: int, text: str):
     if uid in BANNED_USERS:
         await reply_menu(msg, "🚫 <b>You are banned</b> from using this bot.", [[("⬅️ Back", "menu", "danger")]])
@@ -2559,7 +2559,7 @@ async def _run_and_report(msg, uid: int, text: str):
     creds_preview = len(extract_credentials(text))
     init_card = (
         f"╭────────────────────────╮\n"
-        f"│ 📈 <b>CRUNCHYROLL v11 — LIVE</b> │\n"
+        f"│ 📈 <b>CRUNCHYROLL — LIVE</b> │\n"
         f"╰────────────────────────╯\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📄 Lines: <code>{line_count}</code> • 🎯 Combos: <code>{creds_preview}</code> • 🧹 Clean: <code>{clean_preview.get('cleaned',0)}</code> Dup: <code>{clean_preview.get('dup',0)}</code>\n"
@@ -2751,7 +2751,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 text, _ = menu_main(uid, uname)
             except Exception:
-                text = "╭────────────────────────╮\n│  🔥 <b>CRUNCHYROLL v11</b> 🔥  │\n╰────────────────────────╯"
+                text = "╭────────────────────────╮\n│  🔥 <b>CRUNCHYROLL</b> 🔥  │\n╰────────────────────────╯"
             if is_owner(uid):
                 text = "👑 <b>Welcome Owner!</b>\n\n" + text
         _, rows = menu_main(uid, uname)
@@ -3053,7 +3053,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             elif compat_action == "check":
                 set_pending(uid, "creds")
-                await reply_menu(msg, "💎 <b>Check Account v11</b>\n\nSend <code>EMAIL:PASS</code> — one or many lines.\nExample: <code>user@gmail.com:pass123</code>\n\n✨ Auto clean + dedup + retry enabled", [[("⬅️ Back", "menu", "danger")]])
+                await reply_menu(msg, "💎 <b>Check Account</b>\n\nSend <code>EMAIL:PASS</code> — one or many lines.\nExample: <code>user@gmail.com:pass123</code>\n\n✨ Auto clean + dedup + retry enabled", [[("⬅️ Back", "menu", "danger")]])
                 return
             elif compat_action == "file":
                 await reply_menu(msg, "📂 <b>Check File</b>\n\nSend me your <code>.txt</code> / <code>.csv</code> file with combos.\n\nAuto clean + dedup + 5000 max", [[("⬅️ Back", "menu", "danger")]])
@@ -3513,7 +3513,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await edit_menu(m, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
                 return
             set_pending(uid, "creds")
-            await edit_menu(m, "💎 <b>Check Account v11</b>\n\nSend <code>EMAIL:PASS</code> — one or many lines.\nExample: <code>user@gmail.com:pass123</code>\n\n✨ Auto clean + dedup + retry 2x + scoring", [[("⬅️ Back", "menu", "danger")]])
+            await edit_menu(m, "💎 <b>Check Account</b>\n\nSend <code>EMAIL:PASS</code> — one or many lines.\nExample: <code>user@gmail.com:pass123</code>\n\n✨ Auto clean + dedup + retry 2x + scoring", [[("⬅️ Back", "menu", "danger")]])
             return
         elif data == "file":
             if not is_admin(uid, uname_btn):
@@ -3599,7 +3599,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 low = sorted(scores.items(), key=lambda x: x[1])[:3]
                 low_text = "\n".join([f"• <code>{esc(k[:40])}</code> → {v}" for k,v in low]) if low else ""
                 txt = (
-                    f"📊 <b>Proxy Stats v11</b>\n"
+                    f"📊 <b>Proxy Stats</b>\n"
                     f"━━━━━━━━━━━━━━━━━━━━━\n"
                     f"🌐 Live: <code>{live}</code> • Auto: <code>{auto_c}</code> • Manual: <code>{manual_c}</code>\n"
                     f"📦 Pool: <code>{pool_size()}</code> • Scores: <code>{len(scores)}</code>\n"
@@ -3656,7 +3656,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ac = bool(STORE.get_setting("auto_check", True)) if STORE else True
             ap = bool(STORE.get_setting("auto_proxy", True)) if STORE else True
             txt = (
-                f"⚙️ <b>Settings v11</b>\n"
+                f"⚙️ <b>Settings</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━\n"
                 f"🔍 Auto-Check Proxies: <code>{'ON' if ac else 'OFF'}</code>\n"
                 f"🔄 Auto-Load Proxies: <code>{'ON' if ap else 'OFF'}</code>\n"
@@ -3754,7 +3754,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         elapsed = int(time.time() - REFRESH_STATE.get("start", time.time()))
                         rate = tested / max(1, elapsed)
                         eta = int((total - tested) / max(1, rate)) if rate else 0
-                        await edit_menu(m, f"🔄 <b>Refreshing — Real Live v11</b>\n━━━━━━━━━━━━━━━━━━━━━\n📦 <b>Testing</b> {tested}/{total} [{bar}] {pct}%\n🌐 <b>Live:</b> <code>{live}</code> • ✅ <b>Rate:</b> <code>{live}/{tested}</code>\n⏱️ <b>Elapsed:</b> <code>{elapsed}s</code> • ⏳ <b>ETA:</b> <code>{eta}s</code>\n⚡ <b>100x Fast</b> • 150 workers • Scoring ON", None)
+                        await edit_menu(m, f"🔄 <b>Refreshing — Real Live</b>\n━━━━━━━━━━━━━━━━━━━━━\n📦 <b>Testing</b> {tested}/{total} [{bar}] {pct}%\n🌐 <b>Live:</b> <code>{live}</code> • ✅ <b>Rate:</b> <code>{live}/{tested}</code>\n⏱️ <b>Elapsed:</b> <code>{elapsed}s</code> • ⏳ <b>ETA:</b> <code>{eta}s</code>\n⚡ <b>100x Fast</b> • 150 workers • Scoring ON", None)
                     except Exception:
                         break
             prog=asyncio.create_task(_rp())
@@ -3766,7 +3766,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elapsed = int(time.time() - REFRESH_STATE.get("start", time.time()))
             live = proxy_count()
             pool = pool_size()
-            await edit_menu(m, f"✅ <b>Auto Proxies Ready — Real v11</b>\n━━━━━━━━━━━━━━━━━━━━━\n🌐 <b>Live:</b> <code>{live}</code> • 📦 <b>Pool:</b> <code>{pool}</code> • Scores: <code>{len(PROXY_SCORES)}</code>\n⏱️ <b>Time:</b> <code>{elapsed}s</code> • Tested {REFRESH_STATE.get('tested',0)}/{REFRESH_STATE.get('total',0)}\n⚡ <b>100x Fast</b> • 1:1 ready • Scoring", [[("⚙️ Proxy Settings","proxysettings","primary"),("⬅️ Back","menu","danger")]])
+            await edit_menu(m, f"✅ <b>Auto Proxies Ready — Real</b>\n━━━━━━━━━━━━━━━━━━━━━\n🌐 <b>Live:</b> <code>{live}</code> • 📦 <b>Pool:</b> <code>{pool}</code> • Scores: <code>{len(PROXY_SCORES)}</code>\n⏱️ <b>Time:</b> <code>{elapsed}s</code> • Tested {REFRESH_STATE.get('tested',0)}/{REFRESH_STATE.get('total',0)}\n⚡ <b>100x Fast</b> • 1:1 ready • Scoring", [[("⚙️ Proxy Settings","proxysettings","primary"),("⬅️ Back","menu","danger")]])
             return
         elif data == "admins":
             if not is_owner(uid):
@@ -3774,7 +3774,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             admins = STORE.get_admins() if STORE else []
             admins_u = STORE.get_setting("admin_usernames", []) if STORE else []
-            txt2 = "👥 <b>Admins — Owner Panel v11</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
+            txt2 = "👥 <b>Admins — Owner Panel</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
             txt2 += f"👑 Owner: <code>{OWNER_ID}</code> @{OWNER_USERNAME.lstrip('@')}\n"
             txt2 += "━━━━━━━━━━━━━━━━━━━━━\n"
             if admins or admins_u:
@@ -3824,7 +3824,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await edit_menu(m, "📢 <b>Broadcast</b>\n\nSend message to broadcast to all users.", [[("⬅️ Back", "admins", "danger")]])
             return
         elif data in ("genpick", "gen_24", "gen_48", "gen_72", "autocheck", "oxaam", "tv"):
-            await edit_menu(m, "ℹ️ <b>Just a Checker v11</b> — that feature was removed.\nUse <b>💎 Check Account</b> / <b>📂 Check File</b> / <b>🧹 Clean</b>.", [[("⬅️ Back", "menu", "danger")]])
+            await edit_menu(m, "ℹ️ <b>Just a Checker</b> — that feature was removed.\nUse <b>💎 Check Account</b> / <b>📂 Check File</b> / <b>🧹 Clean</b>.", [[("⬅️ Back", "menu", "danger")]])
             return
         else:
             await edit_menu(m, "ℹ️ Unknown action. Use menu.", [[("⬅️ Back", "menu", "danger")]])
@@ -3868,14 +3868,14 @@ def start_health_server():
         def root():
             return jsonify({
                 "status": "ok",
-                "bot": "CrunchyrollChecker v11",
+                "bot": "CrunchyrollChecker",
                 "uptime": uptime(),
                 "proxies_live": proxy_count(),
                 "proxies_pool": pool_size(),
                 "checks_done": CHECKS_DONE,
                 "hits": TOTAL_HITS,
                 "threads": THREADS,
-                "version": "v11 UPGRADED"
+                "version": "v1"
             })
 
         @app.route("/health")
@@ -3936,7 +3936,7 @@ def main():
     # Load upgraded data
     load_proxy_scores()
     BANNED_USERS = load_banned()
-    print(f"[*] CrunchyrollChecker — BlazeNXT v11 UPGRADED starting")
+    print(f"[*] CrunchyrollChecker — BlazeNXT starting")
     print(f"[*] Owner: {OWNER_USERNAME} ({OWNER_ID}) | Threads: {THREADS} | Data dir: {DATA_DIR.resolve()}")
     print(f"[*] Banned: {len(BANNED_USERS)} | Scores: {len(PROXY_SCORES)} | Flask: {FLASK_OK}")
 
@@ -3995,7 +3995,7 @@ def main():
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_error_handler(on_error)
 
-    print("[+] Bot v11 UPGRADED running. Ctrl+C to stop.")
+    print("[+] Bot v1 running. Ctrl+C to stop.")
     print(f"[*] Token: {BOT_TOKEN[:6]}...{BOT_TOKEN[-4:]} len={len(BOT_TOKEN)} | Polling...")
 
     # auto-restart wrapper
