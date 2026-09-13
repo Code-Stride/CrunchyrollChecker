@@ -184,4 +184,5 @@ miniapp/            # Mini App (if enabled) — index.html/style.css/app.js
 * Use only with accounts you own / have rights to test. May violate Crunchyroll ToS.
 * Token in env only, never in repo.
 * V1 — clean, fast, owner auto-detect, developer branding only on footer: `Developed by : BlazeNXT` (`https://t.me/blaze_nxt`).
+* Made by [BlazeNXT](http://www.blazenxt.in) — portfolio & more projects at [www.blazenxt.in](http://www.blazenxt.in)
 
