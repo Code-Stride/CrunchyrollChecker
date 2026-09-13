@@ -2692,6 +2692,38 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
         pass
 
 # ===================== ENTRYPOINT =====================
+def main():
+    if not BOT_TOKEN or ":" not in BOT_TOKEN:
+        print("[!] BOT_TOKEN is not set.  Export BOT_TOKEN=<token from @BotFather>")
+        sys.exit(1)
+    if not OWNER_ID:
+        print("[!] OWNER_ID is not set (or not a number).  Export OWNER_ID=<your Telegram numeric id>")
+        sys.exit(1)
+
+    global STORE
+    STORE = Store(DATA_DIR / "store.json")
+
+    print(f"[*] CrunchyrollChecker — BlazeNXT single checker starting")
+    print(f"[*] Owner: {OWNER_USERNAME} ({OWNER_ID}) | Threads: {THREADS} | Data dir: {DATA_DIR.resolve()}")
+
+    _load_pool_into_live()
+    import threading
+    threading.Thread(target=_proxy_loop, daemon=True).start()
+
+    # Build with post_init to set WebApp menu inside event loop
+    from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
+    app = Application.builder().token(BOT_TOKEN).concurrent_updates(True).post_init(_post_init_set_menu).build()
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(MessageHandler(filters.COMMAND, cmd_any))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(CallbackQueryHandler(on_button))
+    app.add_error_handler(on_error)
+
+    print("[+] Bot running. Ctrl+C to stop.")
+    print(f"[*] Token: {BOT_TOKEN[:6]}...{BOT_TOKEN[-4:]} len={len(BOT_TOKEN)} | Polling...")
+    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+
 
 if __name__ == "__main__":
     main()
