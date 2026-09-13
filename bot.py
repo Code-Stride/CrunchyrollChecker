@@ -1832,13 +1832,12 @@ def _build_reply_kb(rows, resize=True, one_time=False) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(kb, resize_keyboard=resize, one_time_keyboard=one_time)
 
 def main_reply_kb(is_owner: bool) -> ReplyKeyboardMarkup:
-# Base rows — last element of Mini App tuple is web_app url (handled by _build_reply_kb)
+    # FREE MODE — sync with menu_main inline, single Crunchyroll
     rows = [
         [("💎 Check Account", "success"), ("📂 Check File", "primary")],
-        [("✅ My Access", "success"), ("📖 How To", "primary")],
+        [("📖 How To Use", "primary"), ("📊 Bot Stats", "primary")],
+        [("👑 Tools Panel", "success")],
     ]
-    if is_owner:
-        rows.append([("👑 Owner Panel", "success")])
     return _build_reply_kb(rows)
 
 def owner_reply_kb() -> ReplyKeyboardMarkup:
@@ -1864,10 +1863,12 @@ def gen_reply_kb() -> ReplyKeyboardMarkup:
 REPLY_TEXT_MAP = {
     "💎 Check Account": "check",
     "📂 Check File": "file",
-    "🎛 Output Mode": "mode",
+    "📖 How To Use": "help",
+    "📊 Bot Stats": "status",
+    "👑 Tools Panel": "opanel",
+    "👑 Owner Panel": "opanel",
     "✅ My Access": "myaccess",
     "📖 How To": "help",
-    "👑 Owner Panel": "opanel",
     "🔑 Generate Code": "genpick",
     "📥 Add Proxies": "addpx",
     "⚙️ Auto-Check": "autocheck",
