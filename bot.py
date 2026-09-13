@@ -1742,7 +1742,7 @@ def hit_card(entry: dict) -> str:
     if d.get("sub_id"):
         L.append(f"• Sub ID: <code>{esc(d.get('sub_id')[:20])}</code>")
     L.append("━━━━━━━━━━━━━━━━━━━━━")
-    L.append("🔥 <b>BlazeNXT</b>")
+    L.append("🔥 <b>CRUNCHYROLL</b>")
     L.append(DEVELOPER_BRANDING)
     return "\n".join(L)
 
@@ -1799,14 +1799,14 @@ def summary_text(res: dict) -> str:
         f"{extra_block}"
         f"{detailed}"
         "━━━━━━━━━━━━━━━━━━━━━\n"
-        "🔥 <b>BlazeNXT</b>\n"
+        "🔥 <b>CRUNCHYROLL</b>\n"
         f"{DEVELOPER_BRANDING}"
     )
 
 def status_text() -> str:
     ac = bool(STORE.get_setting("auto_check", True)) if STORE else True
     return (
-        "📊 <b>BlazeNXT — Bot Status</b>\n"
+        "📊 <b>Bot Status</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
         f"👑 Owner: <code>{esc(OWNER_USERNAME)}</code>\n"
         f"🌐 Live Proxies: <code>{proxy_count()}</code> | Pool: <code>{pool_size()}</code>\n"
@@ -1819,15 +1819,15 @@ def status_text() -> str:
         f"🧩 SOCKS5: <code>{'Yes' if SOCKS5_OK else 'No (missing pysocks)'}</code>\n"
         f"💎 Default Mode: <code>{'Premium Only' if PREMIUM_ONLY_DEFAULT else 'All Working'}</code>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
-        "🔥 <b>BlazeNXT</b>"
+        f"{DEVELOPER_BRANDING}"
     )
 
 def help_text() -> str:
     return (
         "╭────────────────────────╮\n"
-        "│  📖 <b>HELP — BlazeNXT</b>  │\n"
+        "│  📖 <b>HELP</b>  │\n"
         "╰────────────────────────╯\n"
-        "🔥 <b>BlazeNXT Crunchyroll Checker</b> — Powerful, Secure, Fast\n"
+        "🔥 <b>Crunchyroll Checker</b> — Powerful, Secure, Fast\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
         "👑 <b>Owner + Admins Only</b> • 24x7 Auto Proxy • 500 Threads • Smart Scoring\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
@@ -1868,7 +1868,7 @@ def help_text() -> str:
         "│ 2FA/Rate/Errors handled • Instant hits\n"
         "└────────────────────────┘\n"
         "╭────────────────────────╮\n"
-        "│  🔥 <b>BlazeNXT</b> • Powerful • Secure • Fast  │\n"
+        "│  🔥 <b>CRUNCHYROLL</b> • Powerful • Secure • Fast  │\n"
         "╰────────────────────────╯\n"
         f"{DEVELOPER_BRANDING} • 👤 Owner: <code>{esc(OWNER_USERNAME)}</code>"
     )
@@ -1883,7 +1883,7 @@ def welcome_premium_text(uid: int, name: str) -> str:
     # Fancy header with stats
     return (
         "╭────────────────────────╮\n"
-        "│  🔥 <b>BlazeNXT</b> — <i>CRUNCHYROLL</i> 🔥  │\n"
+        "│  🔥 <b>CRUNCHYROLL</b> 🔥  │\n"
         "│  <i>Premium Checker • FREE</i>   │\n"
         "╰────────────────────────╯\n"
         f"👋 Hey <b>{esc(name)}</b>\n"
@@ -2037,7 +2037,7 @@ def menu_main(uid: int):
     try:
         header = welcome_premium_text(uid, str(uid))
     except Exception:
-        header = "╭────────────────────────╮\n│  🔥 <b>BlazeNXT</b> — <i>CRUNCHYROLL</i> 🔥  │\n╰────────────────────────╯"
+        header = "╭────────────────────────╮\n│  🔥 <b>CRUNCHYROLL</b> 🔥  │\n╰────────────────────────╯"
     rows = [
         [("💎 Check Account", "check", "success"), ("📂 Check File", "file", "primary")],
         [("📖 How To Use", "help", "primary"), ("📊 Bot Stats", "status", "primary")],
@@ -2110,9 +2110,9 @@ def _oxaam_report(email, pw, res) -> str:
             "• Or use <b>💎 Check Account</b> with your own combos\n"
             "━━━━━━━━━━━━━━━━━━━━━\n"
             f"🔍 Debug: <code>{esc(info) or 'no_html'}</code>\n"
-            "🔥 <b>BlazeNXT</b> 🎀"
+            "🔥 <b>CRUNCHYROLL</b> 🎀"
         )
-    return head + f"⚠️ Extracted, but check result: <code>{esc(st)}</code> {esc(info)}\n🔥 <b>BlazeNXT</b> 🎀"
+    return head + f"⚠️ Extracted, but check result: <code>{esc(st)}</code> {esc(info)}\n🔥 <b>CRUNCHYROLL</b> 🎀"
 
 # ===================== HIT CARDS (flood-safe) =====================
 async def send_hit_cards(msg, entries: List[dict], cap: int = MAX_HIT_CARDS) -> int:
