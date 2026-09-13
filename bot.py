@@ -194,10 +194,10 @@ ACTIVE_CHECK_MSG: dict = {}
 CHECK_QUEUE: dict = {}  # uid -> list of queued texts
 USER_LOCK = threading.Lock()
 SECURE_LOG = True
-MAX_FILE_MB = 20
+MAX_FILE_MB = 100  # unlimited file support - 100MB ~ 1M combos
 PREMIUM_ONLY_DEFAULT = True
-MAX_PASTED_CREDS = 5000  # upgraded from 2000
-MAX_PASTED_PROXIES = 10000  # upgraded from 5000
+MAX_PASTED_CREDS = 1000000  # UNLIMITED - removed 5000 limit per user request
+MAX_PASTED_PROXIES = 1000000  # UNLIMITED proxies
 MAX_THREADS_USER = 500
 MAX_HIT_CARDS = 150
 ENABLE_HEALTH = _env("ENABLE_HEALTH", "1") != "0"
@@ -3337,7 +3337,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await reply_menu(msg, "💎 <b>Check Account</b>\n\nSend <code>EMAIL:PASS</code> — one or many lines.\nExample: <code>user@gmail.com:pass123</code>\n\n✨ Auto clean + dedup + retry enabled", [[("⬅️ Back", "menu", "danger")]])
                 return
             elif compat_action == "file":
-                await reply_menu(msg, "📂 <b>Check File</b>\n\nSend me your <code>.txt</code> / <code>.csv</code> file with combos.\n\nAuto clean + dedup + 5000 max", [[("⬅️ Back", "menu", "danger")]])
+                await reply_menu(msg, "📂 <b>Check File</b>\n\nSend me your <code>.txt</code> / <code>.csv</code> file with combos.\n\nAuto clean + dedup + Unlimited ♾️", [[("⬅️ Back", "menu", "danger")]])
                 return
             elif compat_action == "help":
                 await reply_menu(msg, help_text(), [[("⬅️ Back", "menu", "danger")]])
@@ -3721,7 +3721,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                              [[("📂 Try Again", "file", "primary"), ("⬅️ Menu", "menu", "danger")]])
             return
         if doc.file_size and doc.file_size > MAX_FILE_MB * 1024 * 1024:
-            await reply_menu(msg, f"❌ File too large (max <code>{MAX_FILE_MB} MB</code>).",
+            await reply_menu(msg, f"❌ File too large (max <code>{MAX_FILE_MB} MB ~ 1M combos</code>). Split into 100MB parts for unlimited.",
                              [[("📂 Try Again", "file", "primary"), ("⬅️ Menu", "menu", "danger")]])
             return
 
@@ -3857,7 +3857,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             clear_pending(uid)
             set_pending(uid, "file")
-            await edit_menu(m, "📂 <b>Check File</b>\n\nSend me your file.\n\nSupports up to 5000 combos + auto clean", [[("⬅️ Back", "menu", "danger")]])
+            await edit_menu(m, "📂 <b>Check File</b>\n\nSend me your file.\n\nUnlimited combos ♾️ + auto clean + dedup", [[("⬅️ Back", "menu", "danger")]])
             return
         elif data == "cleancombos":
             if not is_admin(uid, uname_btn):
