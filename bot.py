@@ -157,20 +157,20 @@ def is_admin(uid: int, username: str = None) -> bool:
             return True
     return False
 
-DATA_DIR = Path(_env("DATA_DIR", "data"))
+DATA_DIR = Path("data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-# Mini App config
-PORT = int(_env("PORT", "8000") or 8000)
+# === BOT-ONLY CONFIG — env me bas BOT_TOKEN + OWNER_ID, baki sab bot se ===
+PORT = int(_env("PORT", "8000") or 8000)  # Railway PORT only
 
-THREADS = max(120, int(_env("THREADS", "120")))  # hard min 120 for 500-600 cpm (user wants 300 max)
-PROXY_REFRESH_MINUTES = max(1, int(_env("PROXY_REFRESH_MINUTES", "15")))
-MAX_PROXIES_TO_KEEP = max(1, int(_env("MAX_PROXIES_TO_KEEP", "80")))
-PROXY_TEST_TIMEOUT = int(_env("PROXY_TEST_TIMEOUT", "6"))  # faster for 500-600 cpm
-PROXY_TEST_SAMPLE = int(_env("PROXY_TEST_SAMPLE", "250"))
-CHECK_TIMEOUT = int(_env("CHECK_TIMEOUT", "15"))
-MAX_FILE_MB = int(_env("MAX_FILE_MB", "20"))  # Telegram Bot API download limit
-PREMIUM_ONLY_DEFAULT = _env("PREMIUM_ONLY", "true").lower() in ("1", "true", "yes", "on")
+THREADS = 120  # default 120, bot se 300 tak change kar sakte ho (Tools → Set Threads)
+PROXY_REFRESH_MINUTES = 15
+MAX_PROXIES_TO_KEEP = 80
+PROXY_TEST_TIMEOUT = 6  # faster for 500-600 cpm
+PROXY_TEST_SAMPLE = 250
+CHECK_TIMEOUT = 15
+MAX_FILE_MB = 20  # Telegram Bot API download limit
+PREMIUM_ONLY_DEFAULT = True
 MAX_PASTED_CREDS = 2000
 MAX_PASTED_PROXIES = 5000
 MAX_THREADS_USER = 300  # max threads user can set (like RESIROX max 300)
@@ -2243,6 +2243,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 val = int(text.strip())
                 if 10 <= val <= 300:
                     THREADS = val
+                try:
+                    STORE.set_setting("threads", val)
+                except Exception:
+                    pass
                     await msg.reply_text(f"✅ <b>Threads Set:</b> <code>{THREADS}</code>\nSpeed ~<code>{THREADS*4} cpm</code>", parse_mode=ParseMode.HTML, reply_markup=owner_reply_kb())
                 else:
                     await msg.reply_text("❌ Threads must be 10-300", parse_mode=ParseMode.HTML)
@@ -2699,6 +2703,10 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             val = int(data.split("_")[1])
             if 10 <= val <= 300:
                 THREADS = val
+                try:
+                    STORE.set_setting("threads", val)
+                except Exception:
+                    pass
                 await edit_menu(m, f"✅ <b>Threads Set</b>\n\n🧵 Now: <code>{THREADS}</code> • Speed ~<code>{THREADS*4} cpm</code> est.\n\nAccuracy maintained. Enjoy 500-600 cpm with good proxies!",
                                 [[("🔵 Proxy Settings", "proxysettings", "primary"), ("⬅️ Back", "menu", "danger")]])
                 return
@@ -2749,8 +2757,16 @@ def main():
         print("[!] OWNER_ID is not set (or not a number).  Export OWNER_ID=<your Telegram numeric id>")
         sys.exit(1)
 
-    global STORE
+    global STORE, THREADS
     STORE = Store(DATA_DIR / "store.json")
+    # Load THREADS from store if set via bot
+    try:
+        saved_threads = STORE.get_setting("threads", None)
+        if saved_threads and 10 <= int(saved_threads) <= 300:
+            THREADS = int(saved_threads)
+            print(f"[*] Loaded THREADS from store: {THREADS}")
+    except Exception:
+        pass
 
     print(f"[*] CrunchyrollChecker — BlazeNXT single checker starting")
     print(f"[*] Owner: {OWNER_USERNAME} ({OWNER_ID}) | Threads: {THREADS} | Data dir: {DATA_DIR.resolve()}")
