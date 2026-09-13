@@ -1743,6 +1743,7 @@ def hit_card(entry: dict) -> str:
         L.append(f"• Sub ID: <code>{esc(d.get('sub_id')[:20])}</code>")
     L.append("━━━━━━━━━━━━━━━━━━━━━")
     L.append("🔥 <b>BlazeNXT</b>")
+    L.append(DEVELOPER_BRANDING)
     return "\n".join(L)
 
 def summary_text(res: dict) -> str:
@@ -1798,7 +1799,8 @@ def summary_text(res: dict) -> str:
         f"{extra_block}"
         f"{detailed}"
         "━━━━━━━━━━━━━━━━━━━━━\n"
-        "🔥 <b>BlazeNXT</b>"
+        "🔥 <b>BlazeNXT</b>\n"
+        f"{DEVELOPER_BRANDING}"
     )
 
 def status_text() -> str:
@@ -1868,7 +1870,7 @@ def help_text() -> str:
         "╭────────────────────────╮\n"
         "│  🔥 <b>BlazeNXT</b> • Powerful • Secure • Fast  │\n"
         "╰────────────────────────╯\n"
-        f"👤 Owner: <code>{esc(OWNER_USERNAME)}</code> • ID: <code>{OWNER_ID}</code>"
+        f"{DEVELOPER_BRANDING} • 👤 Owner: <code>{esc(OWNER_USERNAME)}</code>"
     )
 
 def welcome_premium_text(uid: int, name: str) -> str:
@@ -1891,7 +1893,9 @@ def welcome_premium_text(uid: int, name: str) -> str:
         f"│ 👥 Users: <code>{STORE.active_user_count() if STORE else 0}</code> • 🧵 Threads: <code>{THREADS}</code> (max 500)\n"
         f"│ ⏱ Uptime: <code>{uptime()}</code> • ✅ Checks: <code>{CHECKS_DONE}</code>\n"
         "└────────────────────────┘\n"
-        "👇 <i>Choose an action — buttons below</i> 👇"
+        "👇 <i>Choose an action — buttons below</i> 👇\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{DEVELOPER_BRANDING}"
     )
 
 # ===================== BUTTON MENUS (Bot API 9.4 colored JSON) =====================
@@ -1922,6 +1926,7 @@ def _premium_icon(label: str) -> str | None:
 # BlazeNXT ribbon brand
 BLAZENXT_RIBBON = ""
 BLAZENXT_BRAND = "<b>BlazeNXT</b>"
+DEVELOPER_BRANDING = 'Developed by : <a href="tg://user?id=8708907310">BlazeNXT</a>'  # deeplink
 
 def _build_kb(rows) -> InlineKeyboardMarkup:
     """rows: list of rows; each row = list of (label, cb) or (label, cb, style)."""
