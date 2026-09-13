@@ -164,9 +164,9 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 PORT = int(_env("PORT", "8000") or 8000)  # Railway PORT only
 
 THREADS = 120  # default 120, bot se 300 tak change kar sakte ho (Tools → Set Threads)
-PROXY_REFRESH_MINUTES = 15
-MAX_PROXIES_TO_KEEP = 80
-PROXY_TEST_TIMEOUT = 6  # faster for 500-600 cpm
+PROXY_REFRESH_MINUTES = 5  # 24x7 auto — refresh every 5 min
+MAX_PROXIES_TO_KEEP = 100  # 24x7 keep more
+PROXY_TEST_TIMEOUT = 6  # faster for 500-600 cpm • 24x7 auto proxy
 PROXY_TEST_SAMPLE = 250
 CHECK_TIMEOUT = 15
 MAX_FILE_MB = 20  # Telegram Bot API download limit
@@ -936,12 +936,21 @@ def ensure_proxies() -> None:
             refresh_live_proxies(force=True)
 
 def _proxy_loop() -> None:
+    # 24x7 auto proxy loader — keeps proxies fresh round the clock
     while True:
         try:
-            refresh_live_proxies(force=False)
+            # If live low, force refresh quickly
+            if proxy_count() < 20:
+                refresh_live_proxies(force=True)
+            else:
+                refresh_live_proxies(force=False)
         except Exception as e:
             logger.warning("Proxy loop error: %s", e)
-        time.sleep(PROXY_REFRESH_MINUTES * 60)
+        # Sleep 5 min, but check every 60s if low
+        for _ in range(PROXY_REFRESH_MINUTES):
+            time.sleep(60)
+            if proxy_count() < 15:
+                break
 
 # ---------------- Custom proxy pool (user-added, persistent) ----------------
 def pool_load() -> List[str]:
@@ -1083,7 +1092,7 @@ def extract_credentials(text: str) -> List[dict]:
     return creds
 
 # ===================== CHECKER ENGINE =====================
-def run_check(text: str, reporter=None, hit_callback=None) -> dict:
+def run_check(text: str, reporter=None, hit_callback=None) -> dict:  # 24x7 smart — auto proxy rotate + retry on rate/err
     """Thread-pool check of all credentials. Premium counters: hit/free/bad/rate/err/2fa + live feed + cpm."""
     ensure_proxies()
     creds = extract_credentials(text)
@@ -1695,7 +1704,7 @@ def help_text() -> str:
         "└────────────────────────┘\n"
         "┌─ <b>✨ FEATURES</b> ───────────┐\n"
         "│ ⚡ <b>Speed:</b> <code>120 threads</code> → <code>300 max</code> via Tools\n"
-        "│   └ 4-5/sec • <code>500-600 cpm</code> with good proxies\n"
+        "│   └ 4-5/sec • <code>500-600 cpm • 24x7 auto proxy</code> with good proxies\n"
         "│ 🌐 <b>Proxies:</b> Upload txt (<code>ip:port</code> or <code>user:pass@ip:port</code>)\n"
         "│   └ Auto-checked, more reliable than scrap 🔍\n"
         "│ 🎯 <b>Deep Check:</b> Fan / Mega / Ultimate • Expiry • Price • Trial\n"
@@ -2001,16 +2010,25 @@ async def _run_and_report(msg, uid: int, text: str):
     except Exception:
         pass
     async def _proxy_watchdog():
+        # 24x7 smart watchdog — keeps proxies alive during entire check
         while True:
-            await asyncio.sleep(60)
+            await asyncio.sleep(45)
             try:
-                if proxy_count() < 10:
+                cnt = proxy_count()
+                if cnt < 15:
                     await asyncio.to_thread(refresh_live_proxies, True)
-                if pool_size() > 0 and proxy_count() < 5:
+                    print(f"[*] Watchdog: live {cnt} -> refreshed {proxy_count()}")
+                if pool_size() > 0 and proxy_count() < 10:
                     _load_pool_into_live()
+                # Also ensure auto-fetch if very low
+                if proxy_count() == 0:
+                    await asyncio.to_thread(refresh_live_proxies, True)
+            except Exception as e:
+                logger.debug("watchdog err %s", e)
+            try:
+                if note.text and "SCAN COMPLETE" in note.text:
+                    break
             except Exception:
-                pass
-            if note.text and "SCAN COMPLETE" in note.text:
                 break
         return
     wd_task = asyncio.create_task(_proxy_watchdog())
