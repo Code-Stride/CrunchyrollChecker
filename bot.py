@@ -2047,21 +2047,25 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if is_admin(uid, getattr(user, "username", None)):
             text = "👑 <b>Welcome Owner!</b>\n\n" + text
     _, rows = menu_main(uid)
-    # Remove reply keyboard completely — single visible message
+    # Inline only — no reply board, ensure buttons show (single message)
     try:
-        tmp = await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=ReplyKeyboardRemove())
-        try:
-            await tmp.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=_build_kb(rows))
-        except Exception:
-            pass
-        return
+        await reply_menu(msg, text, rows)
     except Exception as e:
-        logger.warning("cmd_start send failed %s", e)
+        logger.warning("cmd_start inline send failed %s", e)
         try:
-            await reply_menu(msg, text, rows)
+            await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=_build_kb(rows))
         except Exception:
             pass
-        return
+    # Also try to remove old reply board if still cached (separate message, delete after)
+    try:
+        rm = await msg.reply_text(" ", reply_markup=ReplyKeyboardRemove())
+        try:
+            await rm.delete()
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return
 
 async def cmd_any(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Catch-all for any typed /command -> steer the user to the buttons."""
