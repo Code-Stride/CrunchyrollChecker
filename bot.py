@@ -1454,7 +1454,9 @@ def progress_text(res: dict) -> str:
     # Detailed: success rate
     success_rate = (len(res.get('hits', [])) / processed * 100) if processed else 0
     premium = (
-        f"📈 <b>CRUNCHYROLL Scan — Live</b>\n"
+        f"╭────────────────────────╮\n"
+        f"│ 📈 <b>CRUNCHYROLL — LIVE</b> │\n"
+        f"╰────────────────────────╯\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"{legacy}\n"
         f"🔐 2FA: <code>{twofa}</code> | 🌐 Proxies: <code>{proxy_count()}</code> | ✅ Rate: <code>{success_rate:.1f}%</code>\n"
@@ -1515,26 +1517,37 @@ def access_denied_html() -> str:
     )
 
 def hit_card(entry: dict) -> str:
-    """⭐ Full detail card for one hit — BlazeNXT DETAILED style."""
+    """⭐ Hit card — UI improved, clean sections"""
     cred, d = entry["cred"], entry.get("data") or {}
-    L = ["⭐ <b>CRUNCHYROLL HIT!</b>", "━━━━━━━━━━━━━━━━━━━━━"]
+    # Header with fancy border
+    L = [
+        "╭────────────────────────╮",
+        "│  ⭐ <b>CRUNCHYROLL HIT!</b> ⭐  │",
+        "╰────────────────────────╯",
+    ]
     if cred["type"] == "email":
         L.append(f"📧 Email: <code>{esc(cred['value'])}</code>")
         L.append(f"🔑 Password: <code>{esc(cred.get('password', ''))}</code>")
     else:
         L.append(f"🔑 {cred['type'].title()}: <code>{esc(cred['value'][:60])}</code>")
-    L.append("━━━━━━━━━━━━━━━━━━━━━")
-    # Core plan
-    L.append(f"• Plan: <code>{esc(d.get('plan') or 'Premium')}</code>  • Premium: ✅")
-    L.append(f"• Streams: <code>{esc(d.get('streams') or 'N/A')}</code>  • SKU: <code>{esc(d.get('sku') or 'N/A')}</code>")
-    L.append(f"• Plan Type: <code>{esc(d.get('plan_type') or 'N/A')}</code>  • Trial: {'✅' if d.get('trial') else '❌'}")
-    # Billing & expiry - detailed
-    L.append(f"• Expiry: <code>{esc(d.get('expiry') or d.get('next_renewal') or 'N/A')}</code>  • Days Left: <code>{esc(d.get('days_left') or 'N/A')}</code>")
-    L.append(f"• Next Renewal: <code>{esc(d.get('next_renewal') or d.get('expiry') or 'N/A')}</code>")
-    L.append(f"• Auto Renew: {'✅' if d.get('renew') else '❌'}  • Billing: <code>{esc(d.get('duration') or d.get('billing_cycle') or 'N/A')}</code>")
+    L.append("┌─ <b>ACCOUNT</b> ──────────────┐")
+    L.append(f"│ 📧 <code>{esc(cred['value'])}</code>" if cred["type"] == "email" else f"│ 🔑 <code>{esc(cred['value'][:40])}</code>")
+    if cred["type"] == "email":
+        L.append(f"│ 🔑 <code>{esc(cred.get('password', ''))}</code>")
+    L.append("└────────────────────────┘")
+    L.append("┌─ <b>SUBSCRIPTION</b> ─────────┐")
+    L.append(f"│ 💎 Plan: <code>{esc(d.get('plan') or 'Premium')}</code> • {'✅ Premium' if d.get('plan') else '✅'}")
+    L.append(f"│ 📺 Streams: <code>{esc(d.get('streams') or 'N/A')}</code> • 🆔 SKU: <code>{esc(d.get('sku') or 'N/A')}</code>")
+    L.append(f"│ 🏷️ Type: <code>{esc(d.get('plan_type') or 'N/A')}</code> • 🎁 Trial: {'✅' if d.get('trial') else '❌'}")
+    L.append("└────────────────────────┘")
+    L.append("┌─ <b>BILLING</b> ──────────────┐")
+    L.append(f"│ ⏳ Expiry: <code>{esc(d.get('expiry') or d.get('next_renewal') or 'N/A')}</code> • 📅 Days: <code>{esc(d.get('days_left') or 'N/A')}</code>")
+    L.append(f"│ 🔄 Renewal: <code>{esc(d.get('next_renewal') or d.get('expiry') or 'N/A')}</code>")
+    L.append(f"│ ♻️ Auto: {'✅' if d.get('renew') else '❌'} • ⏱ Billing: <code>{esc(d.get('duration') or d.get('billing_cycle') or 'N/A')}</code>")
     price = (str(d.get("price") or "0") + (" " + d["currency"] if d.get("currency") else ""))
-    L.append(f"• Price: <code>{esc(price.strip())}</code>  • Currency: <code>{esc(d.get('currency') or 'N/A')}</code>")
-    L.append(f"• Payment: <code>{esc(d.get('payment') or d.get('payment_method') or 'N/A')}</code>")
+    L.append(f"│ 💰 Price: <code>{esc(price.strip())}</code> • 💱 Cur: <code>{esc(d.get('currency') or 'N/A')}</code>")
+    L.append(f"│ 💳 Pay: <code>{esc(d.get('payment') or d.get('payment_method') or 'N/A')}</code>")
+    L.append("└────────────────────────┘")
     # Account details
     L.append("━━━━━━━━━━━━━━━━━━━━━")
     L.append(f"• Email Verified: {'✅' if d.get('verified') else '❌'}  • Created: <code>{esc(d.get('created') or d.get('start_date') or 'N/A')}</code>")
@@ -1603,7 +1616,9 @@ def summary_text(res: dict) -> str:
             f"✅ Success: <code>{rate:.1f}%</code> • ⏱ Avg: <code>{res.get('cpm',0)} cpm</code>\n"
         )
     return (
-        "✅ <b>CRUNCHYROLL Scan — Complete!</b>\n"
+        "╭────────────────────────╮\n"
+        "│ ✅ <b>SCAN COMPLETE!</b> │\n"
+        "╰────────────────────────╯\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
         f"{legacy}\n"
         f"{extra_block}"
@@ -1633,40 +1648,54 @@ def status_text() -> str:
 
 def help_text() -> str:
     return (
-        "📖 <b>BlazeNXT — How To Use</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n"
-        "💎 <b>Check Account</b> – paste <code>EMAIL:PASS</code> lines (1 or many)\n"
-        "📂 <b>Check File</b> – send <code>.txt / .log / .json / .csv</code>\n"
-        "✅ <b>Free</b> – no code needed, just start checking!\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n"
-        "👑 <b>Owner panel adds:</b>\n"
-        "🔑 Generate codes (24 / 48 / 72h)\n"
-        "📥 Add Proxies · 🧹 Clear Pool · ⚙️ Auto-Check\n"
-        "📊 Live status · 📡 Proxy refresh\n"
-        "🤖 Oxaam auto-fetch · 📺 TV activation\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n"
-        "🔥 <b>BlazeNXT</b>\n"
-        f"👤 Owner: <code>{esc(OWNER_USERNAME)}</code>"
+        "╭────────────────────────╮\n"
+        "│  📖 <b>HOW TO USE</b> — BlazeNXT  │\n"
+        "╰────────────────────────╯\n"
+        "┌─ <b>CRUNCHYROLL CHECKER</b> ─┐\n"
+        "│ 💎 <b>Check Account</b>\n"
+        "│   └ Paste <code>EMAIL:PASS</code> — one or many lines\n"
+        "│   └ Example: <code>user@gmail.com:pass123</code>\n"
+        "│ 📂 <b>Check File</b>\n"
+        "│   └ Send <code>.txt / .csv / .json / .log</code> file\n"
+        "│   └ Auto-extracts combos, supports 10k+ lines\n"
+        "│ ✅ <b>100% FREE</b> — no code, no limits!\n"
+        "└────────────────────────┘\n"
+        "┌─ <b>FEATURES</b> ────────────┐\n"
+        "│ ⚡ <b>Speed:</b> <code>35 threads</code> • <code>~1500 cpm</code>\n"
+        "│ 🌐 <b>Proxies:</b> Auto-harvest + custom pool\n"
+        "│ 🎯 <b>Accurate:</b> Fan / Mega Fan / Ultimate detection\n"
+        "│ 🔐 <b>2FA & Captcha</b> handled\n"
+        "│ 📦 <b>Export:</b> <code>TXT + JSON</code> auto\n"
+        "└────────────────────────┘\n"
+        "┌─ <b>OWNER TOOLS</b> ─────────┐\n"
+        "│ 👑 Owner Panel: Proxies, Stats, Oxaam, TV\n"
+        "│ 🤖 Oxaam auto-fetch • 📺 TV activation\n"
+        "└────────────────────────┘\n"
+        "🔥 <b>BlazeNXT</b> • Fast • Free • Reliable\n"
+        f"👤 Owner: <code>{esc(OWNER_USERNAME)}</code> • 🆘 Support: <code>{esc(OWNER_USERNAME)}</code>"
     )
 
 def welcome_premium_text(uid: int, name: str) -> str:
-    has, exp = STORE.has_access(uid) if STORE else (False, None)
-    if is_admin(uid):
-        access_line = "👑 <b>Owner</b> • Unlimited"
-    elif has and exp:
-        access_line = f"🔑 Access: <code>Active • Expires {fmt_dt(exp)}</code>"
+    # FREE MODE UI — clean, modern, no subscription gate
+    is_owner = is_admin(uid)
+    if is_owner:
+        access_line = "👑 <b>Owner</b> • <code>Unlimited</code> ♾️"
     else:
-        access_line = "⛔ <b>Access Required</b>"
+        access_line = "✅ <b>Free Access</b> • <code>Unlimited</code> 🎉"
+    # Fancy header with stats
     return (
-        "🔥 <b>BlazeNXT</b> — <i>CRUNCHYROLL CHECKER</i> 🎀\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n"
-        f"👋 Hello, <code>{esc(name)}</code>!\n"
-        f"🆔 <code>{uid}</code>  •  {access_line}\n"
-        f"🌐 Proxies: <code>{proxy_count()} live</code> • Pool: <code>{pool_size()}</code>\n"
-        f"👥 Users: <code>{STORE.active_user_count() if STORE else 0}</code> • 🧵 <code>{THREADS} threads</code>\n"
-        f"⏱ Uptime: <code>{uptime()}</code> • ✅ Checks: <code>{CHECKS_DONE}</code>\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n"
-        "👇 <i>Select an action below</i>"
+        "╭────────────────────────╮\n"
+        "│  🔥 <b>BlazeNXT</b> — <i>CRUNCHYROLL</i> 🔥  │\n"
+        "│  <i>Premium Checker • FREE</i>   │\n"
+        "╰────────────────────────╯\n"
+        f"👋 Hey <b>{esc(name)}</b>! <code>{uid}</code>\n"
+        f"{access_line}\n"
+        "┌─ <b>STATS</b> ────────────────┐\n"
+        f"│ 🌐 Proxies: <code>{proxy_count()} live</code> • 📦 Pool: <code>{pool_size()}</code>\n"
+        f"│ 👥 Users: <code>{STORE.active_user_count() if STORE else 0}</code> • 🧵 Threads: <code>{THREADS}</code>\n"
+        f"│ ⏱ Uptime: <code>{uptime()}</code> • ✅ Checks: <code>{CHECKS_DONE}</code>\n"
+        "└────────────────────────┘\n"
+        "👇 <i>Choose an action — buttons below</i> 👇"
     )
 
 # ===================== BUTTON MENUS (Bot API 9.4 colored JSON) =====================
@@ -1910,18 +1939,20 @@ AIO_SERVICES = [
 ]
 
 def menu_main(uid: int):
-    # FREE MODE — single Crunchyroll checker, no subscription
+    # FREE MODE — single Crunchyroll checker, UI improved
     try:
         header = welcome_premium_text(uid, str(uid))
     except Exception:
-        header = "🔥 <b>BlazeNXT</b> — <i>CRUNCHYROLL CHECKER</i>\n━━━━━━━━━━━━━━━━━━━━━"
-    # Core checker actions only — FREE
+        header = "╭────────────────────────╮\n│  🔥 <b>BlazeNXT</b> — <i>CRUNCHYROLL</i> 🔥  │\n╰────────────────────────╯"
+    # Core checker — clean 2x2 grid feel
     rows = [
         [("💎 Check Account", "check", "success"), ("📂 Check File", "file", "primary")],
-        [("📖 How To", "help", "primary")],
+        [("📖 How To Use", "help", "primary"), ("📊 Bot Stats", "status", "primary")],
     ]
     if is_admin(uid):
         rows.append([("👑 Owner Panel", "opanel", "success")])
+    else:
+        rows.append([("👥 Support", "help", "primary")])
     return header, rows
 
 def menu_owner():
@@ -2017,7 +2048,9 @@ async def _run_and_report(msg, uid: int, text: str):
     creds_preview = len(extract_credentials(text))
     # Premium initial card — mimics BlazeNXT "CRUNCHYROLL Scan — Live 0.6%"
     init_card = (
-        f"📈 <b>CRUNCHYROLL Scan — Live</b>\n"
+        f"╭────────────────────────╮\n"
+        f"│ 📈 <b>CRUNCHYROLL — LIVE</b> │\n"
+        f"╰────────────────────────╯\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📄 Lines: <code>{line_count}</code> • Combos: <code>{creds_preview}</code>\n"
         f"⏳ Crunchyroll 0% [░░░░░░░░░░░░░░░░░░░░] (0/{creds_preview})\n"
