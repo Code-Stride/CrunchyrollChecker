@@ -972,7 +972,6 @@ def is_manual_proxy_url(url: str) -> bool:
 def harvest_proxies() -> List[str]:
     raw = set()
     raw_lock = threading.Lock()
-    # include custom sources
     all_sources = list(PROXY_SOURCES) + list(CUSTOM_PROXY_SOURCES)
 
     def fetch_one(url: str):
@@ -1055,14 +1054,12 @@ def test_one_proxy(proxy_str: str) -> Optional[dict]:
     schemes = ["http"]
     if SOCKS5_OK:
         schemes.append("socks5")
-    # SUPER PREMIUM: measure speed, try fastest URL first
-    test_urls = PROXY_TEST_URLS
+    # SUPER PREMIUM: turbo fastest URL + speed measurement
     try:
         turbo = bool(STORE.get_setting("turbo_mode", False)) if STORE else False
     except:
         turbo = False
-    if turbo:
-        test_urls = ["https://www.google.com/generate_204"]  # fastest only in turbo
+    test_urls = ["https://www.google.com/generate_204"] if turbo else PROXY_TEST_URLS
     for scheme in schemes:
         proxies = {"http": f"{scheme}://{proxy_str}", "https": f"{scheme}://{proxy_str}"}
         for url in test_urls:
@@ -1072,13 +1069,11 @@ def test_one_proxy(proxy_str: str) -> Optional[dict]:
                                  headers={"User-Agent": BARO_WUA})
                 if r.status_code in (200, 204):
                     elapsed = time.time() - t0
-                    # store speed
                     try:
                         full_url = proxies.get("https","")
                         if full_url:
                             PROXY_SPEEDS[full_url] = round(elapsed, 3)
-                            # quick country detection for top fast proxies (only for fast ones <1s)
-                            if elapsed < 1.0 and full_url not in PROXY_COUNTRIES and random.random() < 0.1:
+                            if elapsed < 1.0 and full_url not in PROXY_COUNTRIES and random.random() < 0.12:
                                 threading.Thread(target=lambda u=full_url: get_proxy_country_fast(u), daemon=True).start()
                     except:
                         pass
@@ -1166,7 +1161,6 @@ def refresh_live_proxies(force: bool = False) -> None:
                 url = p.get("https") or ""
                 if url and url not in MANUAL_PROXY_URLS:
                     AUTO_PROXY_URLS.add(url)
-        # SUPER PREMIUM: sort live by speed (fastest first) for 2000 CPM
         try:
             with PROXY_LOCK:
                 live_sorted = sorted(live, key=lambda p: PROXY_SPEEDS.get(p.get("https",""), 999))
@@ -1558,7 +1552,6 @@ def run_check(text: str, reporter=None, hit_callback=None, uid: int = None) -> d
     try:
         pc = proxy_count()
         if turbo:
-            # TURBO: 500 threads, no limit, max speed
             dynamic_threads = min(MAX_THREADS_USER, max(200, pc*3))
         else:
             dynamic_threads = min(THREADS, max(50, pc*2), MAX_THREADS_USER)
@@ -1794,7 +1787,6 @@ def load_custom_sources():
         sources = []
         if CUSTOM_SOURCES_FILE.exists():
             sources = [l.strip() for l in CUSTOM_SOURCES_FILE.read_text(encoding="utf-8").splitlines() if l.strip() and l.strip().startswith("http")]
-        # also check STORE
         try:
             if STORE:
                 stored = STORE.get_setting("custom_sources", [])
@@ -1839,17 +1831,14 @@ def save_proxy_meta():
         logger.warning("save_proxy_meta failed: %s", e)
 
 def get_proxy_country_fast(proxy_url: str) -> str:
-    """Fast country detection via ip-api.com - cached"""
     try:
         if proxy_url in PROXY_COUNTRIES:
             return PROXY_COUNTRIES[proxy_url]
-        # extract host
         import re as _re
         m = _re.search(r"@?([\d.]+|[^:/]+):\d+", proxy_url)
         host = m.group(1) if m else ""
         if not host or host.count(".") < 1:
             return ""
-        # quick check via ip-api (1 req per proxy, cached)
         try:
             r = requests.get(f"http://ip-api.com/json/{host}?fields=countryCode", timeout=3)
             if r.status_code == 200:
@@ -2332,7 +2321,6 @@ def status_text() -> str:
     ac = bool(STORE.get_setting("auto_check", True)) if STORE else True
     turbo = bool(STORE.get_setting("turbo_mode", False)) if STORE else False
     daily = load_daily_stats()
-    # country stats
     try:
         country_counter = Counter(PROXY_COUNTRIES.values())
         top_countries = " • ".join([f"{flag_emoji(cc)}{cc}: {cnt}" for cc, cnt in country_counter.most_common(3)])
@@ -2615,8 +2603,8 @@ def menu_main(uid: int, username: str = None):
 
 def menu_owner():
     auto_on = bool(STORE.get_setting("auto_proxy", True)) if STORE else True
-    daily = load_daily_stats()
     turbo = bool(STORE.get_setting("turbo_mode", False)) if STORE else False
+    daily = load_daily_stats()
     header = (
         "⚙️ <b>Proxy Settings — SUPER PREMIUM SPEED V1</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
@@ -2920,8 +2908,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
         msg = update.effective_message
         if not user or not msg:
+            logger.warning("cmd_start: no user or msg")
             return
         uid = user.id
+        try:
+            logger.info("cmd_start from %s (@%s) name=%s", uid, getattr(user, "username", ""), getattr(user, "first_name", ""))
+        except:
+            pass
         if uid in BANNED_USERS:
             await reply_menu(msg, "🚫 <b>You are banned</b> from using this bot.", [[("⬅️ Back", "menu", "danger")]])
             return
@@ -2978,11 +2971,20 @@ async def cmd_any(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not user or not msg:
             return
         uid = user.id
+        txt = (msg.text or "").strip()
+        txt_lower = txt.lower()
+
+        # PUBLIC ping - works even if banned or not admin - for health check
+        if txt_lower in ("/ping", "/alive", "/test"):
+            try:
+                await msg.reply_text(f"🏓 <b>Pong!</b>\n⏱ Uptime: <code>{uptime()}</code>\n🌐 Live: <code>{proxy_count()}</code>\n✅ Bot is alive!\n\nIf you see Access Denied on /start, contact owner: {OWNER_USERNAME}", parse_mode=ParseMode.HTML)
+            except Exception as e:
+                logger.warning("ping reply failed: %s", e)
+            return
+
         if uid in BANNED_USERS and not is_owner(uid):
             await reply_menu(msg, "🚫 <b>You are banned</b>", [[("⬅️ Back", "menu", "danger")]])
             return
-        txt = (msg.text or "").strip()
-        txt_lower = txt.lower()
 
         if txt_lower in ("/cmds", "/commands", "/help"):
             await reply_menu(msg, help_text(), [[("⬅️ Back", "menu", "danger")]])
@@ -3200,7 +3202,6 @@ async def cmd_any(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             cur = bool(STORE.get_setting("turbo_mode", False)) if STORE else False
             STORE.set_setting("turbo_mode", not cur)
-            # also set threads to max if turbo on
             if not cur:
                 try:
                     THREADS = MAX_THREADS_USER
@@ -3250,7 +3251,6 @@ async def cmd_any(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     for cc, cnt in country_counter.most_common(10):
                         txt2 += f"{flag_emoji(cc)} {cc} ({COUNTRY_MAP.get(cc, cc)}): <code>{cnt}</code>\n"
                     txt2 += f"\n📊 Total with country: <code>{len(PROXY_COUNTRIES)}</code> / {proxy_count()} live"
-                # speed stats
                 try:
                     if PROXY_SPEEDS:
                         avg = round(sum(PROXY_SPEEDS.values())/len(PROXY_SPEEDS),3)
@@ -3288,6 +3288,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not user or not msg or not msg.text:
             return
         uid = user.id
+        # Log every incoming text for debug (sanitized)
+        try:
+            logger.info("Incoming text from %s (%s): %s", uid, getattr(user, "username", ""), sanitize_log(msg.text[:100]))
+        except:
+            pass
         if uid in BANNED_USERS and not is_owner(uid):
             await reply_menu(msg, "🚫 <b>You are banned</b>", [[("⬅️ Back", "menu", "danger")]])
             return
@@ -3748,6 +3753,10 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         user = q.from_user
         uid = user.id if user else 0
+        try:
+            logger.info("Button %s from %s (@%s)", q.data, uid, getattr(user, "username", ""))
+        except:
+            pass
         if uid in BANNED_USERS and not is_owner(uid):
             try:
                 await q.answer("🚫 You are banned", show_alert=True)
@@ -4010,18 +4019,6 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text, rows = menu_owner()
             await edit_menu(m, "🧹 <b>Pool cleared.</b>\n\n" + text, rows)
             return
-        elif data == "clearsources":
-            if not is_owner(uid):
-                await edit_menu(m, "❌ <b>Owner Only</b>", [[("⬅️ Back", "menu", "danger")]])
-                return
-            CUSTOM_PROXY_SOURCES.clear()
-            save_custom_sources()
-            try:
-                STORE.set_setting("custom_sources", [])
-            except:
-                pass
-            await edit_menu(m, "🧹 <b>Custom Sources Cleared</b>\nNow only 12 default sources", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Back", "menu", "danger")]])
-            return
         elif data == "autoproxy":
             if not is_admin(uid, uname_btn):
                 await edit_menu(m, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
@@ -4097,6 +4094,18 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 txt2 = f"❌ Error: {esc(str(e))}"
             await edit_menu(m, txt2, [[("📊 Proxy Stats", "proxystats", "primary"), ("⚙️ Settings", "proxysettings", "primary")], [("⬅️ Back", "menu", "danger")]])
+            return
+        elif data == "clearsources":
+            if not is_owner(uid):
+                await edit_menu(m, "❌ <b>Owner Only</b>", [[("⬅️ Back", "menu", "danger")]])
+                return
+            CUSTOM_PROXY_SOURCES.clear()
+            save_custom_sources()
+            try:
+                STORE.set_setting("custom_sources", [])
+            except:
+                pass
+            await edit_menu(m, "🧹 <b>Custom Sources Cleared</b>\nNow only 12 default sources", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Back", "menu", "danger")]])
             return
         elif data.startswith("threads_"):
             if not is_admin(uid, uname_btn):
@@ -4292,7 +4301,17 @@ def start_health_server():
         def run():
             try:
                 print(f"[*] Health server starting on 0.0.0.0:{PORT}")
+                # try to avoid reloader and handle port conflict
                 app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False, threaded=True)
+            except OSError as e:
+                if "Address already in use" in str(e):
+                    print(f"[!] Health server port {PORT} already in use - trying {PORT+1}")
+                    try:
+                        app.run(host="0.0.0.0", port=PORT+1, debug=False, use_reloader=False, threaded=True)
+                    except Exception as e2:
+                        print(f"[!] Health server failed on alt port: {e2}")
+                else:
+                    print(f"[!] Health server failed: {e}")
             except Exception as e:
                 print(f"[!] Health server failed: {e}")
 
@@ -4325,88 +4344,6 @@ def main():
     load_proxy_meta()
     load_custom_sources()
     BANNED_USERS = load_banned()
-
-# SUPER PREMIUM - proxy meta (country, speed, type)
-PROXY_COUNTRIES: dict = {}
-PROXY_SPEEDS: dict = {}
-PROXY_META: dict = {}
-CUSTOM_PROXY_SOURCES: List[str] = []
-
-def load_custom_sources():
-    global CUSTOM_PROXY_SOURCES
-    try:
-        sources = []
-        if CUSTOM_SOURCES_FILE.exists():
-            sources = [l.strip() for l in CUSTOM_SOURCES_FILE.read_text(encoding="utf-8").splitlines() if l.strip() and l.strip().startswith("http")]
-        # also check STORE
-        try:
-            if STORE:
-                stored = STORE.get_setting("custom_sources", [])
-                if stored:
-                    for u in stored:
-                        if u and u not in sources:
-                            sources.append(u)
-        except:
-            pass
-        CUSTOM_PROXY_SOURCES = sources
-        logger.info("Loaded custom proxy sources: %d", len(CUSTOM_PROXY_SOURCES))
-    except Exception as e:
-        logger.warning("load_custom_sources failed: %s", e)
-        CUSTOM_PROXY_SOURCES = []
-
-def save_custom_sources():
-    try:
-        CUSTOM_SOURCES_FILE.write_text("\n".join(CUSTOM_PROXY_SOURCES) + ("\n" if CUSTOM_PROXY_SOURCES else ""), encoding="utf-8")
-    except Exception as e:
-        logger.warning("save_custom_sources failed: %s", e)
-
-def load_proxy_meta():
-    global PROXY_COUNTRIES, PROXY_SPEEDS, PROXY_META
-    try:
-        if PROXY_META_FILE.exists():
-            data = json.loads(PROXY_META_FILE.read_text(encoding="utf-8"))
-            PROXY_COUNTRIES = data.get("countries", {})
-            PROXY_SPEEDS = data.get("speeds", {})
-            PROXY_META = data.get("meta", {})
-            logger.info("Loaded proxy meta: %d countries, %d speeds", len(PROXY_COUNTRIES), len(PROXY_SPEEDS))
-    except Exception as e:
-        logger.warning("load_proxy_meta failed: %s", e)
-        PROXY_COUNTRIES = {}
-        PROXY_SPEEDS = {}
-        PROXY_META = {}
-
-def save_proxy_meta():
-    try:
-        data = {"countries": PROXY_COUNTRIES, "speeds": PROXY_SPEEDS, "meta": PROXY_META}
-        PROXY_META_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    except Exception as e:
-        logger.warning("save_proxy_meta failed: %s", e)
-
-def get_proxy_country_fast(proxy_url: str) -> str:
-    """Fast country detection via ip-api.com - cached"""
-    try:
-        if proxy_url in PROXY_COUNTRIES:
-            return PROXY_COUNTRIES[proxy_url]
-        # extract host
-        import re as _re
-        m = _re.search(r"@?([\d.]+|[^:/]+):\d+", proxy_url)
-        host = m.group(1) if m else ""
-        if not host or host.count(".") < 1:
-            return ""
-        # quick check via ip-api (1 req per proxy, cached)
-        try:
-            r = requests.get(f"http://ip-api.com/json/{host}?fields=countryCode", timeout=3)
-            if r.status_code == 200:
-                j = r.json()
-                cc = j.get("countryCode", "")
-                if cc:
-                    PROXY_COUNTRIES[proxy_url] = cc
-                    return cc
-        except:
-            pass
-        return ""
-    except:
-        return 
     print(f"[*] CrunchyrollChecker — BlazeNXT V1 SUPER PREMIUM SPEED starting")
     print(f"[*] Owner: {OWNER_USERNAME} ({OWNER_ID}) | Threads: {THREADS} | Data dir: {DATA_DIR.resolve()}")
     print(f"[*] Banned: {len(BANNED_USERS)} | Scores: {len(PROXY_SCORES)} | Countries: {len(PROXY_COUNTRIES)} | Custom Sources: {len(CUSTOM_PROXY_SOURCES)} | Flask: {FLASK_OK}")
@@ -4482,12 +4419,24 @@ def get_proxy_country_fast(proxy_url: str) -> str:
 
     while True:
         try:
+            # FIX: create new event loop each restart to avoid "Event loop is closed"
+            try:
+                import asyncio as _asyncio
+                try:
+                    _asyncio.set_event_loop(_asyncio.new_event_loop())
+                except Exception:
+                    pass
+            except Exception:
+                pass
             _app = build_app()
             _app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
             break
         except Exception as e:
             logger.error("Polling crashed: %s — restarting in 5s", e, exc_info=True)
-            time.sleep(5)
+            try:
+                time.sleep(5)
+            except:
+                pass
 
 if __name__ == "__main__":
     main()
