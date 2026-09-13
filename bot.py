@@ -818,20 +818,45 @@ def harvest_proxies() -> List[str]:
     raw = set()
     s = requests.Session()
     for url in PROXY_SOURCES:
-        try:
-            r = s.get(url, timeout=10, headers={"User-Agent": BARO_WUA})
-            if r.status_code == 200:
-                for line in r.text.splitlines():
-                    line = line.strip()
-                    if not line or line.startswith("#"):
-                        continue
-                    if "://" in line:
-                        line = line.split("://", 1)[-1]
-                    line = line.split("/")[0]
-                    if re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+$", line):
-                        raw.add(line)
-        except requests.RequestException:
-            continue
+        for verify in (True, False):
+            try:
+                r = s.get(url, timeout=12, headers={"User-Agent": BARO_WUA}, verify=verify)
+                if r.status_code == 200 and r.text:
+                    for line in r.text.splitlines():
+                        line = line.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        # Handle JSON or plain text
+                        if line.startswith("{") or line.startswith("["):
+                            try:
+                                j = json.loads(r.text)
+                                # proxyscrape v4 returns text, but handle json
+                                if isinstance(j, dict) and "data" in j:
+                                    for p in j["data"]:
+                                        if isinstance(p, dict) and p.get("ip"):
+                                            raw.add(f"{p['ip']}:{p['port']}")
+                                    break
+                            except Exception:
+                                pass
+                            continue
+                        if "://" in line:
+                            line = line.split("://", 1)[-1]
+                        line = line.split("/")[0].split()[0]
+                        # ip:port
+                        if re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+$", line):
+                            raw.add(line)
+                        # domain:port? keep as is
+                        elif re.match(r"^[a-zA-Z0-9.-]+:\d+$", line) and "." in line:
+                            raw.add(line)
+                    break
+            except requests.RequestException as e:
+                if verify:
+                    continue
+                else:
+                    logger.debug("harvest fail %s: %s", url, e)
+                    break
+            except Exception:
+                break
     return list(raw)
 
 def test_one_proxy(proxy_str: str) -> Optional[dict]:
@@ -892,10 +917,15 @@ def refresh_live_proxies(force: bool = False) -> None:
                     live.append(res)
                     if len(live) >= MAX_PROXIES_TO_KEEP:
                         break
+        # Fallback: if no live after test but harvested many, keep a few untested so auto load not 0
+        if not live and candidates:
+            fallback = [{"http": f"http://{c}", "https": f"http://{c}"} for c in candidates[:20]]
+            live = fallback
+            logger.warning("No live after test — using fallback untested %d", len(live))
         with PROXY_LOCK:
             LIVE_PROXIES = live
             LAST_PROXY_HARVEST = now
-        logger.info("Live proxies ready: %d", len(live))
+        logger.info("Live proxies ready: %d (tested %d from %d candidates)", len(live), len(to_test) if 'to_test' in locals() else 0, len(candidates) if 'candidates' in locals() else 0)
     finally:
         _refresh_busy.release()
 
@@ -1863,9 +1893,9 @@ def menu_owner():
         "Format: <code>user:pass@ip:port</code> or <code>ip:port</code>"
     )
     rows = [
-        [("❌ Disable Proxies", "disableproxies", "danger"), ("📥 Upload Proxies", "addpx", "success")],
-        [("🧹 Clear Proxies", "clearpool", "danger"), ("🧵 Set Threads", "setthreads", "primary")],
-        [("⬅️ Back", "menu", "danger")],
+        [("🔄 Refresh Auto", "refresh", "primary"), ("📥 Upload Proxies", "addpx", "success")],
+        [("❌ Disable Proxies", "disableproxies", "danger"), ("🧹 Clear Proxies", "clearpool", "danger")],
+        [("🧵 Set Threads", "setthreads", "primary"), ("⬅️ Back", "menu", "danger")],
     ]
     return header, rows
 
@@ -2406,7 +2436,15 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         await edit_menu(m, "❌ Invalid.", [[("⬅️ Back", "proxysettings", "danger")]])
         return
-    elif data in ("genpick", "gen_24", "gen_48", "gen_72", "refresh", "autocheck", "oxaam", "tv"):
+    elif data == "refresh":
+        await edit_menu(m, "🔄 <b>Refreshing proxies...</b>\n⏳ Please wait", None)
+        try:
+            await asyncio.to_thread(refresh_live_proxies, True)
+            await edit_menu(m, f"✅ <b>Auto Proxies Ready:</b> <code>{proxy_count()}</code> live from auto-fetch\n📦 Pool: <code>{pool_size()}</code>", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Back", "menu", "danger")]])
+        except Exception as e:
+            await edit_menu(m, f"❌ Error: <code>{esc(str(e)[:120])}</code>", [[("⬅️ Back", "proxysettings", "danger")]])
+        return
+    elif data in ("genpick", "gen_24", "gen_48", "gen_72", "autocheck", "oxaam", "tv"):
         await edit_menu(m, "ℹ️ <b>Just a Checker</b> — that feature was removed.\nUse <b>💎 Check Account</b> / <b>📂 Check File</b>.", [[("⬅️ Back", "menu", "danger")]])
         return
 
@@ -2445,6 +2483,12 @@ def main():
     print(f"[*] Owner: {OWNER_USERNAME} ({OWNER_ID}) | Threads: {THREADS} | Data dir: {DATA_DIR.resolve()}")
 
     _load_pool_into_live()
+    # Immediate auto-load attempt
+    try:
+        refresh_live_proxies(force=True)
+        print(f"[*] Auto proxies initial: {proxy_count()} live")
+    except Exception as e:
+        print(f"[!] Initial proxy refresh failed: {e}")
     import threading
     threading.Thread(target=_proxy_loop, daemon=True).start()
 
