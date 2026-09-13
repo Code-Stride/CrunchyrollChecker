@@ -149,24 +149,53 @@ if OWNER_USERNAME and OWNER_USERNAME.lstrip("@"):
     ADMIN_USERNAMES.add(OWNER_USERNAME.lstrip("@").lower())
 
 def is_admin(uid: int, username: str = None) -> bool:
-    if uid in ADMIN_IDS:
-        return True
-    if username:
-        un = str(username).lstrip("@").lower()
-        if un in ADMIN_USERNAMES:
-            return True
-    # Dynamic admins via bot (owner adds)
     try:
-        if STORE and hasattr(STORE, 'get_setting'):
-            dyn_ids = STORE.get_setting("admin_ids", []) or []
-            if uid in dyn_ids:
+        if uid and OWNER_ID and uid == OWNER_ID:
+            return True
+        if uid and uid in ADMIN_IDS:
+            return True
+    except Exception:
+        pass
+    if username:
+        try:
+            un = str(username).lstrip("@").lower().strip()
+            if un and un in ADMIN_USERNAMES:
                 return True
-            dyn_uns = STORE.get_setting("admin_usernames", []) or []
-            if username and str(username).lstrip("@").lower() in [x.lower() for x in dyn_uns]:
-                return True
+        except Exception:
+            pass
+    # Dynamic admins via bot (owner adds) — check both ID and username
+    try:
+        # Use globals to avoid NameError if STORE not yet defined
+        store_obj = globals().get("STORE")
+        if store_obj and hasattr(store_obj, 'get_setting'):
+            dyn_ids = store_obj.get_setting("admin_ids", []) or []
+            # dyn_ids may contain ints and maybe strings
+            try:
+                if uid and uid in dyn_ids:
+                    return True
+                # also check stringified ids
+                if uid and str(uid) in [str(x) for x in dyn_ids]:
+                    return True
+            except Exception:
+                pass
+            dyn_uns = store_obj.get_setting("admin_usernames", []) or []
+            if username and dyn_uns:
+                try:
+                    low = str(username).lstrip("@").lower().strip()
+                    for x in dyn_uns:
+                        if str(x).lower().strip() == low:
+                            return True
+                except Exception:
+                    pass
     except Exception:
         pass
     return False
+
+def is_owner(uid: int) -> bool:
+    try:
+        return bool(OWNER_ID and uid and uid == OWNER_ID)
+    except Exception:
+        return False
 
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -1875,11 +1904,22 @@ def help_text() -> str:
 
 def welcome_premium_text(uid: int, name: str) -> str:
     # FREE MODE UI — clean, modern, no subscription gate
-    is_owner = is_admin(uid)
-    if is_owner:
+    try:
+        # strict owner check for display, admins get Free Access line but still allowed
+        owner_flag = is_owner(uid)
+    except Exception:
+        owner_flag = (uid == OWNER_ID)
+    if owner_flag:
         access_line = "👑 <b>Owner</b> • <code>Unlimited</code> ♾️"
     else:
-        access_line = "✅ <b>Free Access</b> • <code>Unlimited</code> 🎉"
+        # admin or free user — show admin badge if admin
+        try:
+            if is_admin(uid, name):
+                access_line = "✅ <b>Admin Access</b> • <code>Unlimited</code> 🎉"
+            else:
+                access_line = "✅ <b>Free Access</b> • <code>Unlimited</code> 🎉"
+        except Exception:
+            access_line = "✅ <b>Free Access</b> • <code>Unlimited</code> 🎉"
     # Fancy header with stats
     return (
         "╭────────────────────────╮\n"
@@ -2023,12 +2063,32 @@ def clear_pending(uid: int):
     with PENDING_LOCK:
         PENDING.pop(uid, None)
 
-def _has_access(uid: int) -> bool:
-    # Owner + admins only
-    return is_admin(uid)
+def _has_access(uid: int, username: str = None) -> bool:
+    # Owner + admins only — now checks both ID and username (fixes file check for username admins)
+    try:
+        return is_admin(uid, username)
+    except Exception:
+        # fallback to id only
+        try:
+            return is_admin(uid)
+        except Exception:
+            return False
 
 def _is_owner(uid: int, username: str = None) -> bool:
-    return is_admin(uid, username)
+    # Strict owner check — only OWNER_ID, not admins
+    try:
+        if uid and OWNER_ID and uid == OWNER_ID:
+            return True
+    except Exception:
+        pass
+    # also allow if username matches OWNER_USERNAME (in case ID missing)
+    try:
+        if username and OWNER_USERNAME:
+            if str(username).lstrip("@").lower() == OWNER_USERNAME.lstrip("@").lower():
+                return True
+    except Exception:
+        pass
+    return False
 
 # ===================== MENU DEFINITIONS — BlazeNXT =====================
 # Clean Crunchyroll-only menu (no AIO grid) — BlazeNXT
@@ -2037,10 +2097,11 @@ AIO_SERVICES = [
     [("🍥 CRUNCHYROLL", "check", "success")],
 ]
 
-def menu_main(uid: int):
+def menu_main(uid: int, username: str = None):
     # JUST CHECKER — minimal 2x2 + Proxy Settings
     try:
-        header = welcome_premium_text(uid, str(uid))
+        # pass username if available for proper owner detection
+        header = welcome_premium_text(uid, str(username or uid))
     except Exception:
         header = "╭────────────────────────╮\n│  🔥 <b>CRUNCHYROLL</b> 🔥  │\n╰────────────────────────╯"
     rows = [
@@ -2048,8 +2109,12 @@ def menu_main(uid: int):
         [("📖 How To Use", "help", "primary"), ("📊 Bot Stats", "status", "primary")],
         [("⚙️ Proxy Settings", "proxysettings", "primary")],
     ]
-    if uid == OWNER_ID:
-        rows.append([("👥 Admins", "admins", "primary")])
+    try:
+        if is_owner(uid) or uid == OWNER_ID:
+            rows.append([("👥 Admins", "admins", "primary")])
+    except Exception:
+        if uid == OWNER_ID:
+            rows.append([("👥 Admins", "admins", "primary")])
     return header, rows
 
 def menu_owner():
@@ -2273,237 +2338,107 @@ async def _run_and_report(msg, uid: int, text: str):
 
 # ===================== HANDLERS (100% button flow) =====================
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    msg = update.effective_message
-    if not user or not msg:
-        return
-    uid = user.id
-    name = getattr(user, "first_name", None) or getattr(user, "username", None) or str(uid)
-    if not is_admin(uid, getattr(user, "username", None)):
-        owner_contact = f"<a href=\"https://t.me/{OWNER_USERNAME.lstrip('@')}\">{OWNER_USERNAME}</a> (<code>{OWNER_ID}</code>)" if OWNER_USERNAME and OWNER_USERNAME != "@unknown" and OWNER_USERNAME.lstrip("@") else f"<code>{OWNER_ID}</code>"
-        owner_url = f"https://t.me/{OWNER_USERNAME.lstrip('@')}" if OWNER_USERNAME and OWNER_USERNAME != "@unknown" and OWNER_USERNAME.lstrip("@") else f"tg://user?id={OWNER_ID}"
-        await reply_menu(msg, f"❌ <b>Access Denied</b>\n\nThis bot is <b>Owner + Admins only</b>.\nContact owner: {owner_contact}", [[("💬 Contact Owner", owner_url, "primary")]])
-        return
-    # Single path — no double message, board completely removed
     try:
-        text = welcome_premium_text(uid, name)
-        is_owner = is_admin(uid, getattr(user, "username", None))
-        if is_owner:
-            text = "👑 <b>Welcome Owner!</b>\n" + "━━━━━━━━━━━━━━━━━━━━━\n" + text
-    except Exception as e:
-        logger.warning("welcome failed %s", e)
-        text, _ = menu_main(uid)
-        if is_admin(uid, getattr(user, "username", None)):
-            text = "👑 <b>Welcome Owner!</b>\n\n" + text
-    _, rows = menu_main(uid)
-    # Inline only — no reply board, ensure buttons show (single message)
-    try:
-        await reply_menu(msg, text, rows)
-    except Exception as e:
-        logger.warning("cmd_start inline send failed %s", e)
+        user = update.effective_user
+        msg = update.effective_message
+        if not user or not msg:
+            return
+        uid = user.id
+        uname = getattr(user, "username", None)
+        name = getattr(user, "first_name", None) or uname or str(uid)
+        if not is_admin(uid, uname):
+            owner_contact = f"<a href=\"https://t.me/{OWNER_USERNAME.lstrip('@')}\">{OWNER_USERNAME}</a> (<code>{OWNER_ID}</code>)" if OWNER_USERNAME and OWNER_USERNAME != "@unknown" and OWNER_USERNAME.lstrip("@") else f"<code>{OWNER_ID}</code>"
+            owner_url = f"https://t.me/{OWNER_USERNAME.lstrip('@')}" if OWNER_USERNAME and OWNER_USERNAME != "@unknown" and OWNER_USERNAME.lstrip("@") else f"tg://user?id={OWNER_ID}"
+            await reply_menu(msg, f"❌ <b>Access Denied</b>\n\nThis bot is <b>Owner + Admins only</b>.\nContact owner: {owner_contact}", [[("💬 Contact Owner", owner_url, "primary")]])
+            return
         try:
-            await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=_build_kb(rows))
+            text = welcome_premium_text(uid, name)
+            if is_owner(uid):
+                text = "👑 <b>Welcome Owner!</b>\n" + "━━━━━━━━━━━━━━━━━━━━━\n" + text
+            elif is_admin(uid, uname):
+                text = "✅ <b>Welcome Admin!</b>\n" + "━━━━━━━━━━━━━━━━━━━━━\n" + text
+        except Exception as e:
+            logger.warning("welcome failed %s", e)
+            try:
+                text, _ = menu_main(uid, uname)
+            except Exception:
+                text = "╭────────────────────────╮\n│  🔥 <b>CRUNCHYROLL</b> 🔥  │\n╰────────────────────────╯"
+            if is_owner(uid):
+                text = "👑 <b>Welcome Owner!</b>\n\n" + text
+        _, rows = menu_main(uid, uname)
+        try:
+            await reply_menu(msg, text, rows)
+        except Exception as e:
+            logger.warning("cmd_start inline send failed %s", e)
+            try:
+                await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=_build_kb(rows))
+            except Exception:
+                pass
+        try:
+            rm = await msg.reply_text(" ", reply_markup=ReplyKeyboardRemove())
+            try:
+                await rm.delete()
+            except Exception:
+                pass
         except Exception:
             pass
-    # Also try to remove old reply board if still cached (separate message, delete after)
-    try:
-        rm = await msg.reply_text(" ", reply_markup=ReplyKeyboardRemove())
+        return
+    except Exception as e:
+        logger.error("cmd_start error: %s", e, exc_info=True)
         try:
-            await rm.delete()
+            await update.effective_message.reply_text("⚠️ Start failed — try again.")
         except Exception:
             pass
-    except Exception:
-        pass
-    return
 
 async def cmd_any(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Catch-all for any typed /command -> steer the user to the buttons."""
-    user = update.effective_user
-    msg = update.effective_message
-    if not user or not msg:
-        return
-    txt = (msg.text or "").strip().lower()
-    if txt in ("/cmds", "/commands", "/help"):
-        await reply_menu(msg, help_text(), [[("⬅️ Back", "menu", "danger")]])
-        return
-    if txt in ("/proxy", "/proxies", "/proxyinfo", "/pool"):
-        if not is_admin(user.id, getattr(user, "username", None)):
-            await reply_menu(msg, "❌ <b>Admin Only</b>\nOnly owner/admins can use this bot.", [[("⬅️ Back", "menu", "danger")]])
+    try:
+        user = update.effective_user
+        msg = update.effective_message
+        if not user or not msg:
             return
-        ptext, rows = menu_owner()
-        await reply_menu(msg, ptext, rows)
-        return
-    if txt in ("/addproxy", "/addproxies", "/uploadproxy"):
-        if not is_admin(user.id, getattr(user, "username", None)):
-            await reply_menu(msg, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
-            return
-        set_pending(user.id, "addpx")
-        await reply_menu(msg, "📥 <b>Upload Proxies</b>\n\nPaste <code>user:pass@ip:port</code> or <code>ip:port</code> lines, or send a <code>.txt</code> file.\nAuto-detect + auto-check.", [[("⬅️ Back", "proxysettings", "danger")]])
-        return
-    if txt in ("/clearproxy", "/clearproxies"):
-        if not is_admin(user.id, getattr(user, "username", None)):
-            await reply_menu(msg, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
-            return
-        await asyncio.to_thread(clear_pool)
-        await reply_menu(msg, "🧹 <b>Proxies Cleared</b>\nPool & live reset.", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Menu", "menu", "danger")]])
-        return
-    if txt.startswith("/addadmin"):
-        if user.id != OWNER_ID and user.id not in ADMIN_IDS:
-            await reply_menu(msg, "❌ <b>Owner Only</b> — only owner can add admins.", [[("⬅️ Back", "menu", "danger")]])
-            return
-        parts = txt.split()
-        if len(parts) < 2 and msg.reply_to_message and msg.reply_to_message.from_user:
-            target = msg.reply_to_message.from_user
-            ok = STORE.add_admin(target.id, getattr(target, "username", None))
-            await reply_menu(msg, f"{'✅ Added' if ok else 'ℹ️ Already'} admin: <code>{target.id}</code> @{getattr(target,'username','')}", [[("👥 Admins", "admins", "primary"), ("⬅️ Back", "menu", "danger")]])
-            return
-        if len(parts) < 2:
-            await reply_menu(msg, "👑 <b>Add Admin</b>\n\nUse: <code>/addadmin 123456789</code> or <code>/addadmin @username</code>\nOr reply to a user with /addadmin", [[("⬅️ Back", "menu", "danger")]])
-            return
-        arg = parts[1].lstrip("@")
-        try:
-            if arg.isdigit():
-                ok = STORE.add_admin(int(arg))
-                await reply_menu(msg, f"{'✅ Added' if ok else 'ℹ️ Already'} admin: <code>{arg}</code>", [[("👥 Admins", "admins", "primary"), ("⬅️ Back", "menu", "danger")]])
-            else:
-                ok = STORE.add_admin(0, arg)
-                await reply_menu(msg, f"{'✅ Added' if ok else 'ℹ️ Already'} admin: @{arg}", [[("👥 Admins", "admins", "primary"), ("⬅️ Back", "menu", "danger")]])
-        except Exception as e:
-            await reply_menu(msg, f"❌ Error: <code>{e}</code>", [[("⬅️ Back", "menu", "danger")]])
-        return
-    if txt.startswith("/removeadmin") or txt.startswith("/deladmin"):
-        if user.id != OWNER_ID and user.id not in ADMIN_IDS:
-            await reply_menu(msg, "❌ <b>Owner Only</b>", [[("⬅️ Back", "menu", "danger")]])
-            return
-        parts = txt.split()
-        if len(parts) < 2:
-            await reply_menu(msg, "👑 <b>Remove Admin</b>\nUse: <code>/removeadmin 123456</code> or <code>/removeadmin @username</code>", [[("⬅️ Back", "menu", "danger")]])
-            return
-        arg = parts[1].lstrip("@")
-        try:
-            if arg.isdigit():
-                ok = STORE.remove_admin(int(arg))
-            else:
-                ok = STORE.remove_admin(None, arg)
-            await reply_menu(msg, f"{'✅ Removed' if ok else '❌ Not found'}: <code>{arg}</code>", [[("👥 Admins", "admins", "primary"), ("⬅️ Back", "menu", "danger")]])
-        except Exception as e:
-            await reply_menu(msg, f"❌ Error: <code>{e}</code>", [[("⬅️ Back", "menu", "danger")]])
-        return
-    if txt in ("/admins", "/adminlist"):
-        admins = STORE.get_admins() if STORE else []
-        admins_u = STORE.get_setting("admin_usernames", []) if STORE else []
-        txt2 = "👥 <b>Admins</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
-        txt2 += f"👑 Owner: <code>{OWNER_ID}</code> @{OWNER_USERNAME.lstrip('@')}\n"
-        for a in admins:
-            txt2 += f"• <code>{a}</code>\n"
-        for u in admins_u:
-            txt2 += f"• @{u}\n"
-        if not admins and not admins_u:
-            txt2 += "<i>No extra admins</i>\n"
-        txt2 += "\n<i>Owner can /addadmin or /removeadmin</i>"
-        await reply_menu(msg, txt2, [[("⬅️ Back", "menu", "danger")]])
-        return
-    if txt in ("/threads", "/setthreads"):
-        await reply_menu(msg, f"🧵 <b>Set Threads</b>\nCurrent: <code>{THREADS}</code> • Max 300", [[("🧵 50", "threads_50", "primary"), ("🧵 100", "threads_100", "success")], [("🧵 200", "threads_200", "primary"), ("🧵 300", "threads_300", "success")], [("⬅️ Back", "proxysettings", "danger")]])
-        return
-    text, rows = menu_main(user.id)
-    await reply_menu(msg, "🔘 This bot is 100% button-driven — pick an option below 👇\n\n" + text, rows)
-
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global THREADS
-    user = update.effective_user
-    msg = update.effective_message
-    if not user or not msg or not msg.text:
-        return
-    uid = user.id
-    text = msg.text.strip()
-    if not is_admin(uid, getattr(user, "username", None)):
-        owner_contact2 = f"<a href=\"https://t.me/{OWNER_USERNAME.lstrip('@')}\">{OWNER_USERNAME}</a> (<code>{OWNER_ID}</code>)" if OWNER_USERNAME and OWNER_USERNAME != "@unknown" and OWNER_USERNAME.lstrip("@") else f"<code>{OWNER_ID}</code>"
-        owner_url2 = f"https://t.me/{OWNER_USERNAME.lstrip('@')}" if OWNER_USERNAME and OWNER_USERNAME != "@unknown" and OWNER_USERNAME.lstrip("@") else f"tg://user?id={OWNER_ID}"
-        await reply_menu(msg, f"❌ <b>Access Denied</b>\nOwner/Admins only.\nContact: {owner_contact2}", [[("💬 Contact Owner", owner_url2, "primary")]])
-        return
-    # Compat: if user still has old reply board cached, map its text to inline actions (single message)
-    _compat_map = {
-        "💎 Check Account": "check", "📂 Check File": "file",
-        "📖 How To Use": "help", "📊 Bot Stats": "status",
-        "⚙️ Proxy Settings": "proxysettings", "👑 Tools Panel": "proxysettings",
-        "👑 Owner Panel": "proxysettings", "⬅️ Main Menu": "menu", "⬅️ Back": "proxysettings",
-        "🔁 Check Again": "check",
-    }
-    compat_action = _compat_map.get(text)
-    if compat_action:
-        clear_pending(uid)
-        if compat_action == "menu":
-            t2, rows2 = menu_main(uid)
-            await reply_menu(msg, t2, rows2)
-            return
-        elif compat_action == "check":
-            set_pending(uid, "creds")
-            await reply_menu(msg, "💎 <b>Check Account</b>\n\nSend <code>EMAIL:PASS</code> — one or many lines.\nExample: <code>user@gmail.com:pass123</code>", [[("⬅️ Back", "menu", "danger")]])
-            return
-        elif compat_action == "file":
-            await reply_menu(msg, "📂 <b>Check File</b>\n\nSend me your <code>.txt</code> / <code>.csv</code> file with combos.", [[("⬅️ Back", "menu", "danger")]])
-            return
-        elif compat_action == "help":
+        txt = (msg.text or "").strip().lower()
+        if txt in ("/cmds", "/commands", "/help"):
             await reply_menu(msg, help_text(), [[("⬅️ Back", "menu", "danger")]])
             return
-        elif compat_action == "status":
-            await reply_menu(msg, status_text(), [[("⬅️ Back", "menu", "danger")]])
-            return
-        elif compat_action == "proxysettings":
+        if txt in ("/proxy", "/proxies", "/proxyinfo", "/pool"):
+            if not is_admin(user.id, getattr(user, "username", None)):
+                await reply_menu(msg, "❌ <b>Admin Only</b>\nOnly owner/admins can use this bot.", [[("⬅️ Back", "menu", "danger")]])
+                return
             ptext, rows = menu_owner()
             await reply_menu(msg, ptext, rows)
             return
-    pending = get_pending(uid)
-
-    # ---------- active input flows ----------
-    if pending:
-        kind = pending["kind"]
-
-        if kind == "creds":
-            clear_pending(uid)
-            creds = extract_credentials(text)
-            if not creds:
-                await reply_menu(msg,
-                    "❌ No credentials found.\nFormat: <code>EMAIL:PASS</code>",
-                    [[("🔁 Try Again", "check", "success"), ("⬅️ Menu", "menu", "danger")]])
+        if txt in ("/addproxy", "/addproxies", "/uploadproxy"):
+            if not is_admin(user.id, getattr(user, "username", None)):
+                await reply_menu(msg, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
                 return
-            if len(creds) > MAX_PASTED_CREDS:
-                await reply_menu(msg,
-                    f"❌ Too many lines (max {MAX_PASTED_CREDS}). Send a file instead.",
-                    [[("📂 Check File", "file", "primary"), ("⬅️ Menu", "menu", "danger")]])
-                return
-            await _run_and_report(msg, uid, text)
+            set_pending(user.id, "addpx")
+            await reply_menu(msg, "📥 <b>Upload Proxies</b>\n\nPaste <code>user:pass@ip:port</code> or <code>ip:port</code> lines, or send a <code>.txt</code> file.\nAuto-detect + auto-check.", [[("⬅️ Back", "proxysettings", "danger")]])
             return
-
-        if kind == "addpx":
-            clear_pending(uid)
-            lines = [l for l in text.splitlines() if l.strip()]
-            if not lines:
+        if txt in ("/clearproxy", "/clearproxies"):
+            if not is_admin(user.id, getattr(user, "username", None)):
+                await reply_menu(msg, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
                 return
-            if len(lines) > MAX_PASTED_PROXIES:
-                await reply_menu(msg, f"❌ Too many lines (max {MAX_PASTED_PROXIES}).",
-                                 [[("📥 Try Again", "addpx", "primary"),
-                                   ("⬅️ Back", "proxysettings", "danger")]])
-                return
-            ac = bool(STORE.get_setting("auto_check", True))
-            added, invalid = await asyncio.to_thread(add_proxies_to_pool, lines, ac)
-            # Wait a bit for background test to start, then show live
-            await asyncio.sleep(1)
-            status = f"🔎 Auto-checking {added} new... Live: <code>{proxy_count()}</code> • Pool: <code>{pool_size()}</code>" if ac else f"Added. Pool: <code>{pool_size()}</code>"
-            await reply_menu(
-                msg,
-                f"📥 <b>Proxies Added</b>\n\n➕ <code>{added}</code> | ⚠️ <code>{invalid}</code> | Pool: <code>{pool_size()}</code> | 🌐 Live: <code>{proxy_count()}</code>\n\n{status}\n<i>Fake proxies will be filtered during check</i>",
-                [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Back", "proxysettings", "danger")]],
-            )
+            await asyncio.to_thread(clear_pool)
+            await reply_menu(msg, "🧹 <b>Proxies Cleared</b>\nPool & live reset.", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Menu", "menu", "danger")]])
             return
-
-        if kind == "addadmin":
-            clear_pending(uid)
-            if uid != OWNER_ID:
-                await reply_menu(msg, "❌ Owner only.", [[("⬅️ Back", "menu", "danger")]])
+        if txt.startswith("/addadmin"):
+            if not is_owner(user.id):
+                await reply_menu(msg, "❌ <b>Owner Only</b> — only owner can add admins.", [[("⬅️ Back", "menu", "danger")]])
                 return
-            arg = text.strip().lstrip("@")
+            parts = txt.split()
+            if len(parts) < 2 and msg.reply_to_message and msg.reply_to_message.from_user:
+                target = msg.reply_to_message.from_user
+                try:
+                    ok = STORE.add_admin(target.id, getattr(target, "username", None))
+                    await reply_menu(msg, f"{'✅ Added' if ok else 'ℹ️ Already'} admin: <code>{target.id}</code> @{getattr(target,'username','')}", [[("👥 Admins", "admins", "primary"), ("⬅️ Back", "menu", "danger")]])
+                except Exception as e:
+                    await reply_menu(msg, f"❌ Error: <code>{esc(str(e))}</code>", [[("⬅️ Back", "menu", "danger")]])
+                return
+            if len(parts) < 2:
+                await reply_menu(msg, "👑 <b>Add Admin</b>\n\nUse: <code>/addadmin 123456789</code> or <code>/addadmin @username</code>\nOr reply to a user with /addadmin", [[("⬅️ Back", "menu", "danger")]])
+                return
+            arg = parts[1].lstrip("@")
             try:
                 if arg.isdigit():
                     ok = STORE.add_admin(int(arg))
@@ -2512,14 +2447,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     ok = STORE.add_admin(0, arg)
                     await reply_menu(msg, f"{'✅ Added' if ok else 'ℹ️ Already'} admin: @{arg}", [[("👥 Admins", "admins", "primary"), ("⬅️ Back", "menu", "danger")]])
             except Exception as e:
-                await reply_menu(msg, f"❌ Error: <code>{e}</code>", [[("⬅️ Back", "admins", "danger")]])
+                await reply_menu(msg, f"❌ Error: <code>{esc(str(e))}</code>", [[("⬅️ Back", "menu", "danger")]])
             return
-        if kind == "remadmin":
-            clear_pending(uid)
-            if uid != OWNER_ID:
-                await reply_menu(msg, "❌ Owner only.", [[("⬅️ Back", "menu", "danger")]])
+        if txt.startswith("/removeadmin") or txt.startswith("/deladmin"):
+            if not is_owner(user.id):
+                await reply_menu(msg, "❌ <b>Owner Only</b>", [[("⬅️ Back", "menu", "danger")]])
                 return
-            arg = text.strip().lstrip("@")
+            parts = txt.split()
+            if len(parts) < 2:
+                await reply_menu(msg, "👑 <b>Remove Admin</b>\nUse: <code>/removeadmin 123456</code> or <code>/removeadmin @username</code>", [[("⬅️ Back", "menu", "danger")]])
+                return
+            arg = parts[1].lstrip("@")
             try:
                 if arg.isdigit():
                     ok = STORE.remove_admin(int(arg))
@@ -2527,323 +2465,559 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     ok = STORE.remove_admin(None, arg)
                 await reply_menu(msg, f"{'✅ Removed' if ok else '❌ Not found'}: <code>{arg}</code>", [[("👥 Admins", "admins", "primary"), ("⬅️ Back", "menu", "danger")]])
             except Exception as e:
-                await reply_menu(msg, f"❌ Error: <code>{e}</code>", [[("⬅️ Back", "admins", "danger")]])
+                await reply_menu(msg, f"❌ Error: <code>{esc(str(e))}</code>", [[("⬅️ Back", "menu", "danger")]])
             return
-        if kind in ("tv_email", "tv_code"):
+        if txt in ("/admins", "/adminlist"):
+            try:
+                admins = STORE.get_admins() if STORE else []
+                admins_u = STORE.get_setting("admin_usernames", []) if STORE else []
+                txt2 = "👥 <b>Admins</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
+                txt2 += f"👑 Owner: <code>{OWNER_ID}</code> @{OWNER_USERNAME.lstrip('@')}\n"
+                for a in admins:
+                    txt2 += f"• <code>{a}</code>\n"
+                for u in admins_u:
+                    txt2 += f"• @{u}\n"
+                if not admins and not admins_u:
+                    txt2 += "<i>No extra admins</i>\n"
+                txt2 += "\n<i>Owner can /addadmin or /removeadmin</i>"
+                await reply_menu(msg, txt2, [[("⬅️ Back", "menu", "danger")]])
+            except Exception as e:
+                logger.warning("admins list failed %s", e)
+                await reply_menu(msg, f"❌ Error listing admins", [[("⬅️ Back", "menu", "danger")]])
+            return
+        if txt in ("/threads", "/setthreads"):
+            try:
+                await reply_menu(msg, f"🧵 <b>Set Threads</b>\nCurrent: <code>{THREADS}</code> • Max 300", [[("🧵 50", "threads_50", "primary"), ("🧵 100", "threads_100", "success")], [("🧵 200", "threads_200", "primary"), ("🧵 300", "threads_300", "success")], [("⬅️ Back", "proxysettings", "danger")]])
+            except Exception as e:
+                logger.warning("threads menu failed %s", e)
+            return
+        try:
+            uname_tmp = getattr(user, "username", None)
+            text_m, rows = menu_main(user.id, uname_tmp)
+            await reply_menu(msg, "🔘 This bot is 100% button-driven — pick an option below 👇\n\n" + text_m, rows)
+        except Exception as e:
+            logger.warning("cmd_any fallback menu failed %s", e)
+            try:
+                await msg.reply_text("Use /start")
+            except Exception:
+                pass
+    except Exception as e:
+        logger.error("cmd_any error: %s", e, exc_info=True)
+        try:
+            if 'msg' in locals() and msg:
+                await msg.reply_text("⚠️ Command error — try again.")
+        except Exception:
+            pass
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global THREADS
+    try:
+        user = update.effective_user
+        msg = update.effective_message
+        if not user or not msg or not msg.text:
+            return
+        uid = user.id
+        uname_ht = getattr(user, "username", None)
+        text = msg.text.strip()
+        if not is_admin(uid, uname_ht):
+            owner_contact2 = f"<a href=\"https://t.me/{OWNER_USERNAME.lstrip('@')}\">{OWNER_USERNAME}</a> (<code>{OWNER_ID}</code>)" if OWNER_USERNAME and OWNER_USERNAME != "@unknown" and OWNER_USERNAME.lstrip("@") else f"<code>{OWNER_ID}</code>"
+            owner_url2 = f"https://t.me/{OWNER_USERNAME.lstrip('@')}" if OWNER_USERNAME and OWNER_USERNAME != "@unknown" and OWNER_USERNAME.lstrip("@") else f"tg://user?id={OWNER_ID}"
+            await reply_menu(msg, f"❌ <b>Access Denied</b>\nOwner/Admins only.\nContact: {owner_contact2}", [[("💬 Contact Owner", owner_url2, "primary")]])
+            return
+        # Compat: if user still has old reply board cached, map its text to inline actions
+        _compat_map = {
+            "💎 Check Account": "check", "📂 Check File": "file",
+            "📖 How To Use": "help", "📊 Bot Stats": "status",
+            "⚙️ Proxy Settings": "proxysettings", "👑 Tools Panel": "proxysettings",
+            "👑 Owner Panel": "proxysettings", "⬅️ Main Menu": "menu", "⬅️ Back": "proxysettings",
+            "🔁 Check Again": "check",
+        }
+        compat_action = _compat_map.get(text)
+        if compat_action:
             clear_pending(uid)
-            await reply_menu(msg, "ℹ️ TV removed — just a checker now.", [[("⬅️ Menu", "menu", "danger")]])
-            return
+            if compat_action == "menu":
+                t2, rows2 = menu_main(uid, uname_ht)
+                await reply_menu(msg, t2, rows2)
+                return
+            elif compat_action == "check":
+                set_pending(uid, "creds")
+                await reply_menu(msg, "💎 <b>Check Account</b>\n\nSend <code>EMAIL:PASS</code> — one or many lines.\nExample: <code>user@gmail.com:pass123</code>", [[("⬅️ Back", "menu", "danger")]])
+                return
+            elif compat_action == "file":
+                await reply_menu(msg, "📂 <b>Check File</b>\n\nSend me your <code>.txt</code> / <code>.csv</code> file with combos.", [[("⬅️ Back", "menu", "danger")]])
+                return
+            elif compat_action == "help":
+                await reply_menu(msg, help_text(), [[("⬅️ Back", "menu", "danger")]])
+                return
+            elif compat_action == "status":
+                await reply_menu(msg, status_text(), [[("⬅️ Back", "menu", "danger")]])
+                return
+            elif compat_action == "proxysettings":
+                ptext, rows = menu_owner()
+                await reply_menu(msg, ptext, rows)
+                return
+        pending = get_pending(uid)
 
-        clear_pending(uid)
+        # ---------- active input flows ----------
+        if pending:
+            kind = pending["kind"]
 
-    # Auto-detect proxy text paste (ip:port) vs combo
-    # If text looks like proxies and not combos, treat as proxy upload
-    proxy_lines = [l for l in text.splitlines() if l.strip() and re.match(r"^(https?://)?([^:]+:[^@]+@)?\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+$", l.strip())]
-    if proxy_lines:
-        maybe_creds = extract_credentials(text)
-        if proxy_lines and not maybe_creds:
-            ac = bool(STORE.get_setting("auto_check", True))
-            added, invalid = await asyncio.to_thread(add_proxies_to_pool, [l.strip() for l in text.splitlines() if l.strip()], ac)
-            await reply_menu(msg, f"📥 <b>Proxies Auto-Detected</b>\n\n➕ <code>{added}</code> • ⚠️ <code>{invalid}</code>\n📦 Pool: <code>{pool_size()}</code> • 🌐 Live: <code>{proxy_count()}</code>", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Menu", "menu", "danger")]])
+            if kind == "creds":
+                clear_pending(uid)
+                creds = extract_credentials(text)
+                if not creds:
+                    await reply_menu(msg,
+                        "❌ No credentials found.\nFormat: <code>EMAIL:PASS</code>",
+                        [[("🔁 Try Again", "check", "success"), ("⬅️ Menu", "menu", "danger")]])
+                    return
+                if len(creds) > MAX_PASTED_CREDS:
+                    await reply_menu(msg,
+                        f"❌ Too many lines (max {MAX_PASTED_CREDS}). Send a file instead.",
+                        [[("📂 Check File", "file", "primary"), ("⬅️ Menu", "menu", "danger")]])
+                    return
+                await _run_and_report(msg, uid, text)
+                return
+
+            if kind == "addpx":
+                clear_pending(uid)
+                lines = [l for l in text.splitlines() if l.strip()]
+                if not lines:
+                    return
+                if len(lines) > MAX_PASTED_PROXIES:
+                    await reply_menu(msg, f"❌ Too many lines (max {MAX_PASTED_PROXIES}).",
+                                     [[("📥 Try Again", "addpx", "primary"),
+                                       ("⬅️ Back", "proxysettings", "danger")]])
+                    return
+                # Check if pasted text is actually email:pass combos (client bug: file with combos treated as proxies)
+                _creds_check = extract_credentials(text)
+                if _creds_check:
+                    # User pasted combos while in addpx state -> treat as combo check
+                    await _run_and_report(msg, uid, text)
+                    return
+                ac = bool(STORE.get_setting("auto_check", True))
+                added, invalid = await asyncio.to_thread(add_proxies_to_pool, lines, ac)
+                await asyncio.sleep(1)
+                status = f"🔎 Auto-checking {added} new... Live: <code>{proxy_count()}</code> • Pool: <code>{pool_size()}</code>" if ac else f"Added. Pool: <code>{pool_size()}</code>"
+                await reply_menu(
+                    msg,
+                    f"📥 <b>Proxies Added</b>\n\n➕ <code>{added}</code> | ⚠️ <code>{invalid}</code> | Pool: <code>{pool_size()}</code> | 🌐 Live: <code>{proxy_count()}</code>\n\n{status}\n<i>Fake proxies will be filtered during check</i>",
+                    [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Back", "proxysettings", "danger")]],
+                )
+                return
+
+            if kind == "addadmin":
+                clear_pending(uid)
+                if not is_owner(uid):
+                    await reply_menu(msg, "❌ Owner only.", [[("⬅️ Back", "menu", "danger")]])
+                    return
+                arg = text.strip().lstrip("@")
+                try:
+                    if arg.isdigit():
+                        ok = STORE.add_admin(int(arg))
+                        await reply_menu(msg, f"{'✅ Added' if ok else 'ℹ️ Already'} admin: <code>{arg}</code>", [[("👥 Admins", "admins", "primary"), ("⬅️ Back", "menu", "danger")]])
+                    else:
+                        ok = STORE.add_admin(0, arg)
+                        await reply_menu(msg, f"{'✅ Added' if ok else 'ℹ️ Already'} admin: @{arg}", [[("👥 Admins", "admins", "primary"), ("⬅️ Back", "menu", "danger")]])
+                except Exception as e:
+                    await reply_menu(msg, f"❌ Error: <code>{esc(str(e))}</code>", [[("⬅️ Back", "admins", "danger")]])
+                return
+            if kind == "remadmin":
+                clear_pending(uid)
+                if not is_owner(uid):
+                    await reply_menu(msg, "❌ Owner only.", [[("⬅️ Back", "menu", "danger")]])
+                    return
+                arg = text.strip().lstrip("@")
+                try:
+                    if arg.isdigit():
+                        ok = STORE.remove_admin(int(arg))
+                    else:
+                        ok = STORE.remove_admin(None, arg)
+                    await reply_menu(msg, f"{'✅ Removed' if ok else '❌ Not found'}: <code>{arg}</code>", [[("👥 Admins", "admins", "primary"), ("⬅️ Back", "menu", "danger")]])
+                except Exception as e:
+                    await reply_menu(msg, f"❌ Error: <code>{esc(str(e))}</code>", [[("⬅️ Back", "admins", "danger")]])
+                return
+            if kind in ("tv_email", "tv_code"):
+                clear_pending(uid)
+                await reply_menu(msg, "ℹ️ TV removed — just a checker now.", [[("⬅️ Menu", "menu", "danger")]])
+                return
+
+            clear_pending(uid)
+
+        # Auto-detect proxy text paste (ip:port) vs combo
+        proxy_lines = [l for l in text.splitlines() if l.strip() and re.match(r"^(https?://)?([^:]+:[^@]+@)?\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+$", l.strip())]
+        if proxy_lines:
+            maybe_creds = extract_credentials(text)
+            if proxy_lines and not maybe_creds:
+                ac = bool(STORE.get_setting("auto_check", True))
+                added, invalid = await asyncio.to_thread(add_proxies_to_pool, [l.strip() for l in text.splitlines() if l.strip()], ac)
+                await reply_menu(msg, f"📥 <b>Proxies Auto-Detected</b>\n\n➕ <code>{added}</code> • ⚠️ <code>{invalid}</code>\n📦 Pool: <code>{pool_size()}</code> • 🌐 Live: <code>{proxy_count()}</code>", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Menu", "menu", "danger")]])
+                return
+        # plain credential paste without button
+        creds = extract_credentials(text)
+        if creds:
+            if len(creds) > MAX_PASTED_CREDS:
+                await reply_menu(msg, f"❌ Too many lines (max {MAX_PASTED_CREDS}). Send a file.", [[("📂 Check File", "file", "primary")]])
+                return
+            await _run_and_report(msg, uid, text)
             return
-    # plain credential paste without button
-    creds = extract_credentials(text)
-    if creds:
-        if len(creds) > MAX_PASTED_CREDS:
-            await reply_menu(msg, f"❌ Too many lines (max {MAX_PASTED_CREDS}). Send a file.", [[("📂 Check File", "file", "primary")]])
+        # if not creds and not pending, show menu only if user seems lost
+        if text.startswith("/"):
+            mtext, rows = menu_main(uid, uname_ht)
+            await reply_menu(msg, "🔘 Use buttons 👇\n\n" + mtext, rows)
             return
-        await _run_and_report(msg, uid, text)
         return
-    # if not creds and not pending, show menu only if user seems lost — but avoid double message on every random text
-    if text.startswith("/"):
-        mtext, rows = menu_main(uid)
-        await reply_menu(msg, "🔘 Use buttons 👇\n\n" + mtext, rows)
-        return
-    # otherwise ignore free text to avoid spamming double messages
-    return
+    except Exception as e:
+        logger.error("handle_text error: %s", e, exc_info=True)
+        try:
+            await update.effective_message.reply_text("⚠️ Error processing your message — try again.", parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    msg = update.effective_message
-    if not user or not msg or not msg.document:
-        return
-    uid = user.id
-    if not is_admin(uid, getattr(user, "username", None)):
-        owner_contact2 = f"<a href=\"https://t.me/{OWNER_USERNAME.lstrip('@')}\">{OWNER_USERNAME}</a> (<code>{OWNER_ID}</code>)" if OWNER_USERNAME and OWNER_USERNAME != "@unknown" and OWNER_USERNAME.lstrip("@") else f"<code>{OWNER_ID}</code>"
-        owner_url2 = f"https://t.me/{OWNER_USERNAME.lstrip('@')}" if OWNER_USERNAME and OWNER_USERNAME != "@unknown" and OWNER_USERNAME.lstrip("@") else f"tg://user?id={OWNER_ID}"
-        await reply_menu(msg, f"❌ <b>Access Denied</b>\nOwner/Admins only.\nContact: {owner_contact2}", [[("💬 Contact Owner", owner_url2, "primary")]])
-        return
-    pending = get_pending(uid)
+    try:
+        user = update.effective_user
+        msg = update.effective_message
+        if not user or not msg or not msg.document:
+            return
+        uid = user.id
+        uname_doc = getattr(user, "username", None)
+        if not is_admin(uid, uname_doc):
+            owner_contact2 = f"<a href=\"https://t.me/{OWNER_USERNAME.lstrip('@')}\">{OWNER_USERNAME}</a> (<code>{OWNER_ID}</code>)" if OWNER_USERNAME and OWNER_USERNAME != "@unknown" and OWNER_USERNAME.lstrip("@") else f"<code>{OWNER_ID}</code>"
+            owner_url2 = f"https://t.me/{OWNER_USERNAME.lstrip('@')}" if OWNER_USERNAME and OWNER_USERNAME != "@unknown" and OWNER_USERNAME.lstrip("@") else f"tg://user?id={OWNER_ID}"
+            await reply_menu(msg, f"❌ <b>Access Denied</b>\nOwner/Admins only.\nContact: {owner_contact2}", [[("💬 Contact Owner", owner_url2, "primary")]])
+            return
+        pending = get_pending(uid)
 
-    # Auto-detect file type if no pending or stale pending — proxy vs combo
-    # Will decide after downloading file whether it's proxy or combo
+        # Handle proxy file upload when in addpx state — BUT if file contains email:pass combos, treat as combo check (fixes client bug)
+        if pending and pending.get("kind") == "addpx":
+            # Peek file first to decide
+            doc_peek = msg.document
+            # Download to check content type
+            note_peek = await msg.reply_text("📥 Downloading file...")
+            try:
+                tg_file_peek = await context.bot.get_file(doc_peek.file_id)
+                tmp_path_peek = Path(tempfile.gettempdir()) / f"peek_{uid}_{int(time.time())}.txt"
+                await tg_file_peek.download_to_drive(str(tmp_path_peek))
+                text_peek = tmp_path_peek.read_text(encoding="utf-8", errors="ignore")
+                tmp_path_peek.unlink(missing_ok=True)
+            except Exception as e:
+                await note_peek.edit_text(f"❌ Download failed: <code>{esc(str(e)[:120])}</code>", parse_mode=ParseMode.HTML)
+                return
+            # If file contains combos, treat as combo check (not proxy)
+            combo_peek = extract_credentials(text_peek)
+            if combo_peek:
+                clear_pending(uid)
+                try:
+                    await note_peek.delete()
+                except Exception:
+                    try:
+                        await note_peek.edit_text("📂 Detected combo file — starting check...")
+                    except Exception:
+                        pass
+                await _run_and_report(msg, uid, text_peek)
+                return
+            # Otherwise proxy file flow
+            clear_pending(uid)
+            lines = [l.strip() for l in text_peek.splitlines() if l.strip()]
+            if not lines:
+                await note_peek.edit_text("❌ No proxies found in file.", parse_mode=ParseMode.HTML)
+                return
+            if len(lines) > MAX_PASTED_PROXIES:
+                await note_peek.edit_text(f"❌ Too many lines (max {MAX_PASTED_PROXIES}).", parse_mode=ParseMode.HTML)
+                return
+            ac = bool(STORE.get_setting("auto_check", True))
+            await note_peek.edit_text(f"🔍 Testing <code>{len(lines)}</code> proxies... (auto-check {'ON' if ac else 'OFF'})", parse_mode=ParseMode.HTML)
+            added, invalid = await asyncio.to_thread(add_proxies_to_pool, lines, ac)
+            status = "🔍 Auto-check started..." if ac else "Added (live check skipped)."
+            await note_peek.edit_text(
+                f"📥 <b>Proxies Uploaded</b>\n\n✅ Added: <code>{added}</code> • ⚠️ Invalid: <code>{invalid}</code>\n"
+                f"📦 Pool: <code>{pool_size()}</code> • 🌐 Live: <code>{proxy_count()}</code>\n\n{status}",
+                parse_mode=ParseMode.HTML
+            )
+            await reply_menu(msg, f"✅ Proxies ready! Pool: <code>{pool_size()}</code> • Live: <code>{proxy_count()}</code>",
+                             [[("🧪 Test Proxies", "proxysettings", "success"), ("💎 Check Account", "check", "success")], [("⬅️ Menu", "menu", "danger")]])
+            return
 
-    # Handle proxy file upload when in addpx state
-    if pending and pending.get("kind") == "addpx":
-        clear_pending(uid)
+        # Fix: file check should work even if pending is creds/addpx etc — clear and allow
+        if pending and pending.get("kind") != "file":
+            clear_pending(uid)
+            pending = None
+        if pending:
+            clear_pending(uid)
+        if not _has_access(uid, uname_doc):
+            # Return access denied, not menu_main (fixes GIF bug where menu shows instead of check)
+            owner_contact_x = f"<a href=\"https://t.me/{OWNER_USERNAME.lstrip('@')}\">{OWNER_USERNAME}</a>" if OWNER_USERNAME and OWNER_USERNAME != "@unknown" and OWNER_USERNAME.lstrip("@") else f"<code>{OWNER_ID}</code>"
+            await reply_menu(msg, f"❌ <b>Access Denied</b>\nOwner/Admins only.\nContact: {owner_contact_x}", [[("⬅️ Back", "menu", "danger")]])
+            return
+
         doc = msg.document
         name = (doc.file_name or "unknown.txt").lower()
+        if not name.endswith((".txt", ".log", ".json", ".csv", ".dat", ".lst")):
+            await reply_menu(msg, "❌ Only <code>.txt / .log / .json / .csv / .dat</code> files allowed.",
+                             [[("📂 Try Again", "file", "primary"), ("⬅️ Menu", "menu", "danger")]])
+            return
         if doc.file_size and doc.file_size > MAX_FILE_MB * 1024 * 1024:
             await reply_menu(msg, f"❌ File too large (max <code>{MAX_FILE_MB} MB</code>).",
-                             [[("📥 Try Again", "addpx", "primary"), ("⬅️ Menu", "menu", "danger")]])
+                             [[("📂 Try Again", "file", "primary"), ("⬅️ Menu", "menu", "danger")]])
             return
-        note = await msg.reply_text("📥 Downloading proxy file...")
+
+        note = await msg.reply_text("📥 Downloading file...")
         try:
             tg_file = await context.bot.get_file(doc.file_id)
-            tmp_path = Path(tempfile.gettempdir()) / f"proxy_{uid}_{int(time.time())}.txt"
+            tmp_path = Path(tempfile.gettempdir()) / f"crunchy_{uid}_{int(time.time())}.txt"
             await tg_file.download_to_drive(str(tmp_path))
             text = tmp_path.read_text(encoding="utf-8", errors="ignore")
             tmp_path.unlink(missing_ok=True)
         except Exception as e:
-            await note.edit_text(f"❌ Download failed: <code>{esc(str(e)[:120])}</code>", parse_mode=ParseMode.HTML)
+            await note.edit_text(f"❌ Download failed: <code>{esc(str(e)[:120])}</code>",
+                                 parse_mode=ParseMode.HTML)
             return
-        lines = [l.strip() for l in text.splitlines() if l.strip()]
-        if not lines:
-            await note.edit_text("❌ No proxies found in file.", parse_mode=ParseMode.HTML)
+        if not text.strip():
+            await note.edit_text("❌ File is empty.")
             return
-        if len(lines) > MAX_PASTED_PROXIES:
-            await note.edit_text(f"❌ Too many lines (max {MAX_PASTED_PROXIES}).", parse_mode=ParseMode.HTML)
+        # Auto-detect: if file looks like proxies and no combos, treat as proxy upload
+        proxy_lines = [l for l in text.splitlines() if l.strip() and re.match(r"^(https?://)?([^:]+:[^@]+@)?\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+$", l.strip())]
+        combo_creds = extract_credentials(text)
+        if proxy_lines and not combo_creds:
+            ac = bool(STORE.get_setting("auto_check", True))
+            added, invalid = await asyncio.to_thread(add_proxies_to_pool, [l.strip() for l in text.splitlines() if l.strip()], ac)
+            await note.edit_text(f"📥 <b>Proxies Auto-Detected & Added</b>\n\n➕ <code>{added}</code> • ⚠️ <code>{invalid}</code>\n📦 Pool: <code>{pool_size()}</code> • 🌐 Live: <code>{proxy_count()}</code>\n\n{'🔎 Auto-check...' if ac else ''}", parse_mode=ParseMode.HTML)
+            await reply_menu(msg, f"✅ Proxies ready! Pool: <code>{pool_size()}</code> • Live: <code>{proxy_count()}</code>", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("💎 Check Account", "check", "success")], [("⬅️ Menu", "menu", "danger")]])
             return
-        ac = bool(STORE.get_setting("auto_check", True))
-        await note.edit_text(f"🔍 Testing <code>{len(lines)}</code> proxies... (auto-check {'ON' if ac else 'OFF'})", parse_mode=ParseMode.HTML)
-        added, invalid = await asyncio.to_thread(add_proxies_to_pool, lines, ac)
-        status = "🔍 Auto-check started..." if ac else "Added (live check skipped)."
-        await note.edit_text(
-            f"📥 <b>Proxies Uploaded</b>\n\n✅ Added: <code>{added}</code> • ⚠️ Invalid: <code>{invalid}</code>\n"
-            f"📦 Pool: <code>{pool_size()}</code> • 🌐 Live: <code>{proxy_count()}</code>\n\n{status}",
-            parse_mode=ParseMode.HTML
-        )
-        await reply_menu(msg, f"✅ Proxies ready! Pool: <code>{pool_size()}</code> • Live: <code>{proxy_count()}</code>",
-                         [[("🧪 Test Proxies", "proxysettings", "success"), ("💎 Check Account", "check", "success")], [("⬅️ Menu", "menu", "danger")]])
-        return
-
-    # Fix: file check should work even if pending is creds/addpx etc — clear and allow
-    if pending and pending["kind"] != "file":
-        # Don't block file upload — just clear stale pending (e.g., creds from previous Check Account)
-        clear_pending(uid)
-        pending = None
-    if pending:
-        clear_pending(uid)
-    if not _has_access(uid):
-        text, rows = menu_main(uid)
-        await reply_menu(msg, text, rows)
-        return
-
-    doc = msg.document
-    name = (doc.file_name or "unknown.txt").lower()
-    if not name.endswith((".txt", ".log", ".json", ".csv", ".dat", ".lst")):
-        await reply_menu(msg, "❌ Only <code>.txt / .log / .json / .csv / .dat</code> files allowed.",
-                         [[("📂 Try Again", "file", "primary"), ("⬅️ Menu", "menu", "danger")]])
-        return
-    if doc.file_size and doc.file_size > MAX_FILE_MB * 1024 * 1024:
-        await reply_menu(msg, f"❌ File too large (max <code>{MAX_FILE_MB} MB</code>).",
-                         [[("📂 Try Again", "file", "primary"), ("⬅️ Menu", "menu", "danger")]])
-        return
-
-    note = await msg.reply_text("📥 Downloading file...")
-    try:
-        tg_file = await context.bot.get_file(doc.file_id)
-        tmp_path = Path(tempfile.gettempdir()) / f"crunchy_{uid}_{int(time.time())}.txt"
-        await tg_file.download_to_drive(str(tmp_path))
-        text = tmp_path.read_text(encoding="utf-8", errors="ignore")
-        tmp_path.unlink(missing_ok=True)
+        elif proxy_lines and combo_creds:
+            pass
+        try:
+            await note.delete()
+        except Exception:
+            pass
+        await _run_and_report(msg, uid, text)
     except Exception as e:
-        await note.edit_text(f"❌ Download failed: <code>{esc(str(e)[:120])}</code>",
-                             parse_mode=ParseMode.HTML)
-        return
-    if not text.strip():
-        await note.edit_text("❌ File is empty.")
-        return
-    # Auto-detect: if file looks like proxies (ip:port lines) and no combos, treat as proxy upload
-    proxy_like = sum(1 for l in text.splitlines() if l.strip() and (":" in l.strip() and "@" in l.strip() or l.strip().count(":")>=1 and "." in l.strip() and not "@" in l.strip().split(":")[0]))
-    # Better: check if lines are ip:port and not email:pass
-    proxy_lines = [l for l in text.splitlines() if l.strip() and re.match(r"^(https?://)?([^:]+:[^@]+@)?\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+$", l.strip())]
-    combo_creds = extract_credentials(text)
-    if proxy_lines and not combo_creds:
-        # It's a proxy file — handle as proxy upload (1000% accuracy)
-        ac = bool(STORE.get_setting("auto_check", True))
-        added, invalid = await asyncio.to_thread(add_proxies_to_pool, [l.strip() for l in text.splitlines() if l.strip()], ac)
-        await note.edit_text(f"📥 <b>Proxies Auto-Detected & Added</b>\n\n➕ <code>{added}</code> • ⚠️ <code>{invalid}</code>\n📦 Pool: <code>{pool_size()}</code> • 🌐 Live: <code>{proxy_count()}</code>\n\n{'🔎 Auto-check...' if ac else ''}", parse_mode=ParseMode.HTML)
-        await reply_menu(msg, f"✅ Proxies ready! Pool: <code>{pool_size()}</code> • Live: <code>{proxy_count()}</code>", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("💎 Check Account", "check", "success")], [("⬅️ Menu", "menu", "danger")]])
-        return
-    elif proxy_lines and combo_creds:
-        # Mixed file — prioritize combo check (user likely sent combo file with some proxy lines)
-        pass
-    await _run_and_report(msg, uid, text)
+        logger.error("handle_document error: %s", e, exc_info=True)
+        try:
+            await update.effective_message.reply_text("⚠️ Error processing file — try again.", parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
 
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global THREADS
-    q = update.callback_query
-    if not q:
-        return
-    user = q.from_user
-    uid = user.id if user else 0
-    data = q.data or ""
-    m = q.message
-    await q.answer()
-
-    if data == "menu":
-        text, rows = menu_main(uid)
-        await edit_menu(m, text, rows)
-        return
-    elif data == "help":
-        await edit_menu(m, help_text(), [[("⬅️ Back", "menu", "danger")]])
-        return
-    elif data == "check":
-        if not is_admin(uid, getattr(user, "username", None)):
-            await edit_menu(m, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
+    try:
+        q = update.callback_query
+        if not q:
             return
-        set_pending(uid, "creds")
-        await edit_menu(m, "💎 <b>Check Account</b>\n\nSend <code>EMAIL:PASS</code> — one or many lines.\nExample: <code>user@gmail.com:pass123</code>", [[("⬅️ Back", "menu", "danger")]])
-        return
-    elif data == "file":
-        if not is_admin(uid, getattr(user, "username", None)):
-            await edit_menu(m, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
-            return
-        clear_pending(uid)
-        set_pending(uid, "file")
-        await edit_menu(m, "📂 <b>Check File</b>\n\nSend me your file.", [[("⬅️ Back", "menu", "danger")]])
-        return
-    elif data == "status":
-        await edit_menu(m, status_text(), [[("⬅️ Back", "menu", "danger")]])
-        return
-    elif data == "proxysettings":
-        if not is_admin(uid, getattr(user, "username", None)):
-            owner_contact3 = f"<a href=\"https://t.me/{OWNER_USERNAME.lstrip('@')}\">{OWNER_USERNAME}</a> (<code>{OWNER_ID}</code>)" if OWNER_USERNAME and OWNER_USERNAME != "@unknown" and OWNER_USERNAME.lstrip("@") else f"<code>{OWNER_ID}</code>"
-            owner_url3 = f"https://t.me/{OWNER_USERNAME.lstrip('@')}" if OWNER_USERNAME and OWNER_USERNAME != "@unknown" and OWNER_USERNAME.lstrip("@") else f"tg://user?id={OWNER_ID}"
-            await edit_menu(m, f"❌ <b>Access Denied</b>\nOwner/Admins only.\nContact: {owner_contact3}", [[("💬 Contact Owner", owner_url3, "primary")]])
-            return
-        text, rows = menu_owner()
-        await edit_menu(m, text, rows)
-        return
-    elif data == "opanel":
-        text, rows = menu_owner()
-        await edit_menu(m, text, rows)
-        return
-    elif data == "pool":
-        await edit_menu(m, "ℹ️ Use <b>⚙️ Proxy Settings</b>.", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Back", "menu", "danger")]])
-        return
-    elif data == "addpx":
-        set_pending(uid, "addpx")
-        await edit_menu(m, "📥 <b>Upload Proxies</b>\n\nPaste lines (one per line):\n<code>host:port</code> or <code>user:pass@ip:port</code>", [[("⬅️ Back", "proxysettings", "danger")]])
-        return
-    elif data == "disableproxies":
-        with PROXY_LOCK:
-            LIVE_PROXIES.clear()
-        await edit_menu(m, "🔵 <b>Proxies Disabled</b>\n🌐 Live: <code>0</code> • Pool kept.", [[("📤 Upload Proxies", "addpx", "success"), ("⬅️ Back", "proxysettings", "danger")]])
-        return
-    elif data == "clearpool":
-        await asyncio.to_thread(clear_pool)
-        text, rows = menu_owner()
-        await edit_menu(m, "🧹 <b>Pool cleared.</b>\n\n" + text, rows)
-        return
-    elif data == "autoproxy":
-        cur = bool(STORE.get_setting("auto_proxy", True)) if STORE else True
-        STORE.set_setting("auto_proxy", not cur)
-        STORE.save()
-        text, rows = menu_owner()
-        await edit_menu(m, f"{'✅ Auto Load ON' if not cur else '⏸️ Auto Load OFF'} — 24x7 auto-fetch {'enabled' if not cur else 'disabled'}\n\n" + text, rows)
-        return
-    elif data == "setthreads":
-        await edit_menu(m, f"🧵 <b>Set Threads</b>\nCurrent: <code>{THREADS}</code> • Max 300",
-                        [[("🧵 50", "threads_50", "primary"), ("🧵 100", "threads_100", "success")],
-                         [("🧵 200", "threads_200", "primary"), ("🧵 300", "threads_300", "success")],
-                         [("🧵 500", "threads_500", "success")],
-                         [("⬅️ Back", "proxysettings", "danger")]])
-        return
-    elif data.startswith("threads_"):
+        user = q.from_user
+        uid = user.id if user else 0
+        uname_btn = getattr(user, "username", None) if user else None
+        data = q.data or ""
+        m = q.message
         try:
-            val = int(data.split("_")[1])
-            if 10 <= val <= 500:
-                THREADS = val
-                try:
-                    STORE.set_setting("threads", val)
-                except Exception:
-                    pass
-                await edit_menu(m, f"✅ <b>Threads Set</b>\n🧵 Now: <code>{THREADS}</code> • ~<code>{THREADS*4} cpm</code>", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Back", "menu", "danger")]])
-                return
+            await q.answer()
         except Exception:
             pass
-        await edit_menu(m, "❌ Invalid.", [[("⬅️ Back", "proxysettings", "danger")]])
-        return
-    elif data == "refresh":
-        REFRESH_STATE["start"] = time.time()
-        await edit_menu(m, "🔄 <b>Refreshing proxies...</b>\n━━━━━━━━━━━━━━━━━━━━━\n⏳ <b>Gathering</b> from 12 sources...\n📦 <b>Queued</b> 1000 candidates", None)
-        async def _rp():
-            while True:
-                await asyncio.sleep(1.2)
-                try:
-                    tested = REFRESH_STATE.get("tested", 0)
-                    total = REFRESH_STATE.get("total", 1000) or 1000
-                    live = REFRESH_STATE.get("live", 0)
-                    pct = int(tested / total * 100) if total else 0
-                    bar = "█" * (pct // 10) + "░" * (10 - pct // 10)
-                    elapsed = int(time.time() - REFRESH_STATE.get("start", time.time()))
-                    # Real ETA based on rate
-                    rate = tested / max(1, elapsed)
-                    eta = int((total - tested) / max(1, rate)) if rate else 0
-                    await edit_menu(m, f"🔄 <b>Refreshing — Real Live</b>\n━━━━━━━━━━━━━━━━━━━━━\n📦 <b>Testing</b> {tested}/{total} [{bar}] {pct}%\n🌐 <b>Live:</b> <code>{live}</code> • ✅ <b>Rate:</b> <code>{live}/{tested}</code>\n⏱️ <b>Elapsed:</b> <code>{elapsed}s</code> • ⏳ <b>ETA:</b> <code>{eta}s</code>\n⚡ <b>100x Fast</b> • 150 workers", None)
-                except Exception:
-                    break
-        prog=asyncio.create_task(_rp())
-        try:
-            await asyncio.to_thread(refresh_live_proxies, True)
-        finally:
-            try: prog.cancel()
-            except: pass
-        elapsed = int(time.time() - REFRESH_STATE.get("start", time.time()))
-        live = proxy_count()
-        pool = pool_size()
-        await edit_menu(m, f"✅ <b>Auto Proxies Ready — Real</b>\n━━━━━━━━━━━━━━━━━━━━━\n🌐 <b>Live:</b> <code>{live}</code> • 📦 <b>Pool:</b> <code>{pool}</code>\n⏱️ <b>Time:</b> <code>{elapsed}s</code> • Tested {REFRESH_STATE.get('tested',0)}/{REFRESH_STATE.get('total',0)}\n⚡ <b>100x Fast</b> • 1:1 ready", [[("⚙️ Proxy Settings","proxysettings","primary"),("⬅️ Back","menu","danger")]])
-        return
-    elif data == "admins":
-        if uid != OWNER_ID and uid not in ADMIN_IDS:
-            await edit_menu(m, "❌ <b>Owner Only</b>", [[("⬅️ Back", "menu", "danger")]])
+
+        if data == "menu":
+            text, rows = menu_main(uid, uname_btn)
+            await edit_menu(m, text, rows)
             return
-        admins = STORE.get_admins() if STORE else []
-        admins_u = STORE.get_setting("admin_usernames", []) if STORE else []
-        txt2 = "👥 <b>Admins — Owner Panel</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
-        txt2 += f"👑 Owner: <code>{OWNER_ID}</code> @{OWNER_USERNAME.lstrip('@')}\n"
-        txt2 += "━━━━━━━━━━━━━━━━━━━━━\n"
-        if admins or admins_u:
-            for a in admins:
-                txt2 += f"• <code>{a}</code>\n"
-            for u in admins_u:
-                txt2 += f"• @{u}\n"
+        elif data == "help":
+            await edit_menu(m, help_text(), [[("⬅️ Back", "menu", "danger")]])
+            return
+        elif data == "check":
+            if not is_admin(uid, uname_btn):
+                await edit_menu(m, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
+                return
+            set_pending(uid, "creds")
+            await edit_menu(m, "💎 <b>Check Account</b>\n\nSend <code>EMAIL:PASS</code> — one or many lines.\nExample: <code>user@gmail.com:pass123</code>", [[("⬅️ Back", "menu", "danger")]])
+            return
+        elif data == "file":
+            if not is_admin(uid, uname_btn):
+                await edit_menu(m, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
+                return
+            clear_pending(uid)
+            set_pending(uid, "file")
+            await edit_menu(m, "📂 <b>Check File</b>\n\nSend me your file.", [[("⬅️ Back", "menu", "danger")]])
+            return
+        elif data == "status":
+            await edit_menu(m, status_text(), [[("⬅️ Back", "menu", "danger")]])
+            return
+        elif data == "proxysettings":
+            if not is_admin(uid, uname_btn):
+                owner_contact3 = f"<a href=\"https://t.me/{OWNER_USERNAME.lstrip('@')}\">{OWNER_USERNAME}</a> (<code>{OWNER_ID}</code>)" if OWNER_USERNAME and OWNER_USERNAME != "@unknown" and OWNER_USERNAME.lstrip("@") else f"<code>{OWNER_ID}</code>"
+                owner_url3 = f"https://t.me/{OWNER_USERNAME.lstrip('@')}" if OWNER_USERNAME and OWNER_USERNAME != "@unknown" and OWNER_USERNAME.lstrip("@") else f"tg://user?id={OWNER_ID}"
+                await edit_menu(m, f"❌ <b>Access Denied</b>\nOwner/Admins only.\nContact: {owner_contact3}", [[("💬 Contact Owner", owner_url3, "primary")]])
+                return
+            text, rows = menu_owner()
+            await edit_menu(m, text, rows)
+            return
+        elif data == "opanel":
+            text, rows = menu_owner()
+            await edit_menu(m, text, rows)
+            return
+        elif data == "pool":
+            await edit_menu(m, "ℹ️ Use <b>⚙️ Proxy Settings</b>.", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Back", "menu", "danger")]])
+            return
+        elif data == "addpx":
+            if not is_admin(uid, uname_btn):
+                await edit_menu(m, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
+                return
+            set_pending(uid, "addpx")
+            await edit_menu(m, "📥 <b>Upload Proxies</b>\n\nPaste lines (one per line):\n<code>host:port</code> or <code>user:pass@ip:port</code>", [[("⬅️ Back", "proxysettings", "danger")]])
+            return
+        elif data == "disableproxies":
+            if not is_admin(uid, uname_btn):
+                await edit_menu(m, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
+                return
+            with PROXY_LOCK:
+                LIVE_PROXIES.clear()
+            await edit_menu(m, "🔵 <b>Proxies Disabled</b>\n🌐 Live: <code>0</code> • Pool kept.", [[("📤 Upload Proxies", "addpx", "success"), ("⬅️ Back", "proxysettings", "danger")]])
+            return
+        elif data == "clearpool":
+            if not is_admin(uid, uname_btn):
+                await edit_menu(m, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
+                return
+            await asyncio.to_thread(clear_pool)
+            text, rows = menu_owner()
+            await edit_menu(m, "🧹 <b>Pool cleared.</b>\n\n" + text, rows)
+            return
+        elif data == "autoproxy":
+            if not is_admin(uid, uname_btn):
+                await edit_menu(m, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
+                return
+            cur = bool(STORE.get_setting("auto_proxy", True)) if STORE else True
+            STORE.set_setting("auto_proxy", not cur)
+            STORE.save()
+            text, rows = menu_owner()
+            await edit_menu(m, f"{'✅ Auto Load ON' if not cur else '⏸️ Auto Load OFF'} — 24x7 auto-fetch {'enabled' if not cur else 'disabled'}\n\n" + text, rows)
+            return
+        elif data == "setthreads":
+            if not is_admin(uid, uname_btn):
+                await edit_menu(m, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
+                return
+            await edit_menu(m, f"🧵 <b>Set Threads</b>\nCurrent: <code>{THREADS}</code> • Max 300",
+                            [[("🧵 50", "threads_50", "primary"), ("🧵 100", "threads_100", "success")],
+                             [("🧵 200", "threads_200", "primary"), ("🧵 300", "threads_300", "success")],
+                             [("🧵 500", "threads_500", "success")],
+                             [("⬅️ Back", "proxysettings", "danger")]])
+            return
+        elif data.startswith("threads_"):
+            if not is_admin(uid, uname_btn):
+                await edit_menu(m, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
+                return
+            try:
+                val = int(data.split("_")[1])
+                if 10 <= val <= 500:
+                    THREADS = val
+                    try:
+                        STORE.set_setting("threads", val)
+                    except Exception:
+                        pass
+                    await edit_menu(m, f"✅ <b>Threads Set</b>\n🧵 Now: <code>{THREADS}</code> • ~<code>{THREADS*4} cpm</code>", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Back", "menu", "danger")]])
+                    return
+            except Exception:
+                pass
+            await edit_menu(m, "❌ Invalid.", [[("⬅️ Back", "proxysettings", "danger")]])
+            return
+        elif data == "refresh":
+            if not is_admin(uid, uname_btn):
+                await edit_menu(m, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
+                return
+            REFRESH_STATE["start"] = time.time()
+            await edit_menu(m, "🔄 <b>Refreshing proxies...</b>\n━━━━━━━━━━━━━━━━━━━━━\n⏳ <b>Gathering</b> from 12 sources...\n📦 <b>Queued</b> 1000 candidates", None)
+            async def _rp():
+                while True:
+                    await asyncio.sleep(1.2)
+                    try:
+                        tested = REFRESH_STATE.get("tested", 0)
+                        total = REFRESH_STATE.get("total", 1000) or 1000
+                        live = REFRESH_STATE.get("live", 0)
+                        pct = int(tested / total * 100) if total else 0
+                        bar = "█" * (pct // 10) + "░" * (10 - pct // 10)
+                        elapsed = int(time.time() - REFRESH_STATE.get("start", time.time()))
+                        rate = tested / max(1, elapsed)
+                        eta = int((total - tested) / max(1, rate)) if rate else 0
+                        await edit_menu(m, f"🔄 <b>Refreshing — Real Live</b>\n━━━━━━━━━━━━━━━━━━━━━\n📦 <b>Testing</b> {tested}/{total} [{bar}] {pct}%\n🌐 <b>Live:</b> <code>{live}</code> • ✅ <b>Rate:</b> <code>{live}/{tested}</code>\n⏱️ <b>Elapsed:</b> <code>{elapsed}s</code> • ⏳ <b>ETA:</b> <code>{eta}s</code>\n⚡ <b>100x Fast</b> • 150 workers", None)
+                    except Exception:
+                        break
+            prog=asyncio.create_task(_rp())
+            try:
+                await asyncio.to_thread(refresh_live_proxies, True)
+            finally:
+                try: prog.cancel()
+                except: pass
+            elapsed = int(time.time() - REFRESH_STATE.get("start", time.time()))
+            live = proxy_count()
+            pool = pool_size()
+            await edit_menu(m, f"✅ <b>Auto Proxies Ready — Real</b>\n━━━━━━━━━━━━━━━━━━━━━\n🌐 <b>Live:</b> <code>{live}</code> • 📦 <b>Pool:</b> <code>{pool}</code>\n⏱️ <b>Time:</b> <code>{elapsed}s</code> • Tested {REFRESH_STATE.get('tested',0)}/{REFRESH_STATE.get('total',0)}\n⚡ <b>100x Fast</b> • 1:1 ready", [[("⚙️ Proxy Settings","proxysettings","primary"),("⬅️ Back","menu","danger")]])
+            return
+        elif data == "admins":
+            if not is_owner(uid):
+                await edit_menu(m, "❌ <b>Owner Only</b>", [[("⬅️ Back", "menu", "danger")]])
+                return
+            admins = STORE.get_admins() if STORE else []
+            admins_u = STORE.get_setting("admin_usernames", []) if STORE else []
+            txt2 = "👥 <b>Admins — Owner Panel</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
+            txt2 += f"👑 Owner: <code>{OWNER_ID}</code> @{OWNER_USERNAME.lstrip('@')}\n"
+            txt2 += "━━━━━━━━━━━━━━━━━━━━━\n"
+            if admins or admins_u:
+                for a in admins:
+                    txt2 += f"• <code>{a}</code>\n"
+                for u in admins_u:
+                    txt2 += f"• @{u}\n"
+            else:
+                txt2 += "<i>No admins yet</i>\n"
+            txt2 += "━━━━━━━━━━━━━━━━━━━━━\n"
+            txt2 += "<i>Tap Add/Remove to manage</i>"
+            await edit_menu(m, txt2, [[("➕ Add Admin", "addadmin", "success"), ("➖ Remove Admin", "remadmin", "danger")], [("⬅️ Back", "menu", "danger")]])
+            return
+        elif data == "addadmin":
+            if not is_owner(uid):
+                await edit_menu(m, "❌ <b>Owner Only</b>", [[("⬅️ Back", "menu", "danger")]])
+                return
+            set_pending(uid, "addadmin")
+            await edit_menu(m, "➕ <b>Add Admin</b>\n\nSend <code>USER_ID</code> or <code>@username</code>\nOr forward a message from the user.", [[("⬅️ Back", "admins", "danger")]])
+            return
+        elif data == "remadmin":
+            if not is_owner(uid):
+                await edit_menu(m, "❌ <b>Owner Only</b>", [[("⬅️ Back", "menu", "danger")]])
+                return
+            set_pending(uid, "remadmin")
+            await edit_menu(m, "➖ <b>Remove Admin</b>\n\nSend <code>USER_ID</code> or <code>@username</code>", [[("⬅️ Back", "admins", "danger")]])
+            return
+        elif data in ("genpick", "gen_24", "gen_48", "gen_72", "autocheck", "oxaam", "tv"):
+            await edit_menu(m, "ℹ️ <b>Just a Checker</b> — that feature was removed.\nUse <b>💎 Check Account</b> / <b>📂 Check File</b>.", [[("⬅️ Back", "menu", "danger")]])
+            return
         else:
-            txt2 += "<i>No admins yet</i>\n"
-        txt2 += "━━━━━━━━━━━━━━━━━━━━━\n"
-        txt2 += "<i>Tap Add/Remove to manage</i>"
-        await edit_menu(m, txt2, [[("➕ Add Admin", "addadmin", "success"), ("➖ Remove Admin", "remadmin", "danger")], [("⬅️ Back", "menu", "danger")]])
-        return
-    elif data == "addadmin":
-        if uid != OWNER_ID:
-            await edit_menu(m, "❌ <b>Owner Only</b>", [[("⬅️ Back", "menu", "danger")]])
+            # Unknown callback - don't crash
+            await edit_menu(m, "ℹ️ Unknown action. Use menu.", [[("⬅️ Back", "menu", "danger")]])
             return
-        set_pending(uid, "addadmin")
-        await edit_menu(m, "➕ <b>Add Admin</b>\n\nSend <code>USER_ID</code> or <code>@username</code>\nOr forward a message from the user.", [[("⬅️ Back", "admins", "danger")]])
-        return
-    elif data == "remadmin":
-        if uid != OWNER_ID:
-            await edit_menu(m, "❌ <b>Owner Only</b>", [[("⬅️ Back", "menu", "danger")]])
-            return
-        set_pending(uid, "remadmin")
-        await edit_menu(m, "➖ <b>Remove Admin</b>\n\nSend <code>USER_ID</code> or <code>@username</code>", [[("⬅️ Back", "admins", "danger")]])
-        return
-    elif data in ("genpick", "gen_24", "gen_48", "gen_72", "autocheck", "oxaam", "tv"):
-        await edit_menu(m, "ℹ️ <b>Just a Checker</b> — that feature was removed.\nUse <b>💎 Check Account</b> / <b>📂 Check File</b>.", [[("⬅️ Back", "menu", "danger")]])
-        return
+    except Exception as e:
+        logger.error("on_button error data=%s: %s", data if 'data' in locals() else '?', e, exc_info=True)
+        try:
+            if 'm' in locals() and m:
+                await m.reply_text("⚠️ Button error — try again.", parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
 
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
-    logger.error("Unhandled error: %s", context.error, exc_info=context.error)
     try:
-        if update and update.effective_message:
-            await update.effective_message.reply_text(
-                "❌ Internal error — try again or contact the owner."
-            )
-    except Exception:
-        pass
+        err = context.error
+        # Don't spam user with internal error for common BadRequest / message not modified
+        from telegram.error import BadRequest
+        if isinstance(err, BadRequest):
+            logger.warning("BadRequest suppressed: %s", err)
+            return
+        logger.error("Unhandled error: %s", err, exc_info=err)
+        # Only reply if it's a real crash and we have a message
+        try:
+            if update and hasattr(update, 'effective_message') and update.effective_message:
+                # Avoid double internal error spam - use friendly message
+                await update.effective_message.reply_text(
+                    "⚠️ Something went wrong — please try again."
+                )
+        except Exception:
+            pass
+    except Exception as e:
+        logger.error("on_error itself failed: %s", e)
 
 # ===================== ENTRYPOINT =====================
 def main():
