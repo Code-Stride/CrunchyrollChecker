@@ -1151,15 +1151,25 @@ def _proxy_loop() -> None:
             except Exception:
                 auto_on = True
             if auto_on:
-                if proxy_count() < 20:
+                pc = proxy_count()
+                if pc < 20:
                     refresh_live_proxies(force=True)
                 else:
                     refresh_live_proxies(force=False)
+                # also save scores periodically
+                if random.random() < 0.2:
+                    try:
+                        save_proxy_scores()
+                    except:
+                        pass
         except Exception as e:
-            logger.warning("Proxy loop error: %s", e)
+            logger.warning("Proxy loop error: %s", sanitize_log(str(e)))
         for _ in range(PROXY_REFRESH_MINUTES):
             time.sleep(60)
-            if proxy_count() < 15:
+            try:
+                if proxy_count() < 15:
+                    break
+            except:
                 break
 
 # ---------------- Custom proxy pool ----------------
@@ -1328,7 +1338,7 @@ def extract_credentials(text: str) -> List[dict]:
     return creds
 
 def clean_combos(text: str) -> Tuple[str, dict]:
-    """Clean, dedup, normalize combos. Returns (cleaned_text, stats)"""
+    """Clean, dedup, normalize combos. Returns (cleaned_text, stats) - FINAL v1"""
     lines = text.splitlines()
     cleaned = []
     seen = set()
@@ -1340,32 +1350,39 @@ def clean_combos(text: str) -> Tuple[str, dict]:
         if not orig:
             empty += 1
             continue
-        # remove spaces around colon, normalize
-        # keep only first colon split for email:pass
+        # skip obvious non-credential lines
+        if orig.lower().startswith(("http://", "https://")) and "@" not in orig:
+            # could be proxy URL, not combo - count as invalid for combo cleaner
+            invalid += 1
+            continue
         if ":" in orig and "@" in orig:
-            # try to extract email:pass
             m = EMAIL_PASS_RE.search(orig)
             if m:
                 email = m.group(1).strip().lower()
                 pw = m.group(2).strip()
-                # basic email validation
-                if len(email) > 254 or len(pw) < 1:
+                # strict validation
+                if len(email) > 254 or len(email) < 5 or len(pw) < 1 or len(pw) > 128:
+                    invalid += 1
+                    continue
+                if "." not in email.split("@")[-1]:
                     invalid += 1
                     continue
                 key = f"{email}:{pw}"
+                # dedup case-insensitive email, case-sensitive pass
                 if key in seen:
                     dup += 1
                     continue
                 seen.add(key)
                 cleaned.append(f"{email}:{pw}")
             else:
-                # maybe email with spaces
-                # try to clean spaces
                 cleaned_line = orig.replace(" ", "")
                 m2 = EMAIL_PASS_RE.search(cleaned_line)
                 if m2:
                     email = m2.group(1).lower()
                     pw = m2.group(2)
+                    if len(email) > 254 or len(pw) < 1:
+                        invalid += 1
+                        continue
                     key = f"{email}:{pw}"
                     if key in seen:
                         dup += 1
@@ -1375,8 +1392,8 @@ def clean_combos(text: str) -> Tuple[str, dict]:
                 else:
                     invalid += 1
         else:
-            # not email:pass, maybe token etc — keep if looks like credential
-            if len(orig) > 20:
+            # token/cookie - keep if long enough and not just numbers
+            if len(orig) > 20 and not orig.isdigit():
                 if orig not in seen:
                     seen.add(orig)
                     cleaned.append(orig)
@@ -1434,6 +1451,7 @@ def run_check(text: str, reporter=None, hit_callback=None, uid: int = None) -> d
     lock = threading.Lock()
 
     def next_proxy() -> Optional[dict]:
+        # No nested locks - use PROXY_LOCK only to avoid deadlock
         with PROXY_LOCK:
             if not LIVE_PROXIES:
                 return None
@@ -1457,10 +1475,9 @@ def run_check(text: str, reporter=None, hit_callback=None, uid: int = None) -> d
                         pass
             if LIVE_PROXIES:
                 try:
-                    with lock:
-                        m_idx = MANUAL_PX_IDX[0] % len(LIVE_PROXIES)
-                        MANUAL_PX_IDX[0] += 1
-                        return LIVE_PROXIES[m_idx]
+                    m_idx = MANUAL_PX_IDX[0] % len(LIVE_PROXIES)
+                    MANUAL_PX_IDX[0] = (MANUAL_PX_IDX[0] + 1) % 1000000
+                    return LIVE_PROXIES[m_idx]
                 except Exception:
                     try:
                         return random.choice(LIVE_PROXIES)
@@ -1688,9 +1705,19 @@ def get_history(uid: int):
 def load_banned():
     try:
         if BAN_FILE.exists():
-            return set(json.loads(BAN_FILE.read_text(encoding="utf-8")))
-    except:
-        pass
+            data = json.loads(BAN_FILE.read_text(encoding="utf-8"))
+            out = set()
+            for x in data:
+                try:
+                    out.add(int(x))
+                except:
+                    try:
+                        out.add(int(str(x).strip()))
+                    except:
+                        pass
+            return out
+    except Exception as e:
+        logger.warning("load_banned failed: %s", e)
     return set()
 
 def save_banned(banned_set):
@@ -2018,8 +2045,17 @@ class ProgressReporter:
     async def _edit(self, text: str):
         try:
             try:
-                # show stop + pause buttons
-                kb = _build_kb([[("🛑 Stop", "stopcheck", "danger"), ("⏸️ Pause", "pausecheck", "primary")]])
+                # show stop + pause buttons, if paused show resume
+                is_paused = False
+                try:
+                    is_paused = bool(PAUSE_REQUEST.get(self.uid)) if self.uid else False
+                except:
+                    is_paused = False
+                if is_paused:
+                    kb = _build_kb([[("▶️ Resume", "resumecheck", "success"), ("🛑 Stop", "stopcheck", "danger")]])
+                    text = "⏸️ <b>PAUSED</b>\n" + text
+                else:
+                    kb = _build_kb([[("🛑 Stop", "stopcheck", "danger"), ("⏸️ Pause", "pausecheck", "primary")]])
                 await self.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
             except BadRequest as e:
                 if "message is not modified" in str(e).lower():
@@ -3233,6 +3269,37 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await reply_menu(msg, f"❌ Error: <code>{esc(str(e))}</code>", [[("⬅️ Back", "admins", "danger")]])
                 return
 
+            if kind == "banuser":
+                clear_pending(uid)
+                if not is_owner(uid):
+                    await reply_menu(msg, "❌ Owner only.", [[("⬅️ Back", "menu", "danger")]])
+                    return
+                try:
+                    ban_id = int(text.strip().lstrip("@"))
+                    BANNED_USERS.add(ban_id)
+                    save_banned(BANNED_USERS)
+                    await reply_menu(msg, f"🚫 Banned: <code>{ban_id}</code>", [[("👥 Admins", "admins", "primary"), ("⬅️ Back", "menu", "danger")]])
+                except Exception as e:
+                    await reply_menu(msg, f"❌ Error: <code>{esc(str(e))}</code>", [[("⬅️ Back", "admins", "danger")]])
+                return
+            if kind == "unbanuser":
+                clear_pending(uid)
+                if not is_owner(uid):
+                    await reply_menu(msg, "❌ Owner only.", [[("⬅️ Back", "menu", "danger")]])
+                    return
+                try:
+                    unban_id = int(text.strip().lstrip("@"))
+                    BANNED_USERS.discard(unban_id)
+                    save_banned(BANNED_USERS)
+                    await reply_menu(msg, f"✅ Unbanned: <code>{unban_id}</code>", [[("👥 Admins", "admins", "primary"), ("⬅️ Back", "menu", "danger")]])
+                except Exception as e:
+                    await reply_menu(msg, f"❌ Error: <code>{esc(str(e))}</code>", [[("⬅️ Back", "admins", "danger")]])
+                return
+            if kind == "clean_check":
+                clear_pending(uid)
+                # user typed something after clean - treat as new input
+                pass
+
             clear_pending(uid)
 
         # Auto-detect proxy text paste vs combo vs URL
@@ -3964,44 +4031,48 @@ def main():
     # Health server for Railway
     start_health_server()
 
-    from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("cmds", cmd_any))
-    app.add_handler(CommandHandler("commands", cmd_any))
-    app.add_handler(CommandHandler("help", cmd_any))
-    app.add_handler(CommandHandler("proxy", cmd_any))
-    app.add_handler(CommandHandler("proxies", cmd_any))
-    app.add_handler(CommandHandler("addproxy", cmd_any))
-    app.add_handler(CommandHandler("clearproxy", cmd_any))
-    app.add_handler(CommandHandler("threads", cmd_any))
-    app.add_handler(CommandHandler("autoproxy", cmd_any))
-    app.add_handler(CommandHandler("autoload", cmd_any))
-    app.add_handler(CommandHandler("stop", cmd_any))
-    app.add_handler(CommandHandler("cancel", cmd_any))
-    app.add_handler(CommandHandler("stopcheck", cmd_any))
-    app.add_handler(CommandHandler("pause", cmd_any))
-    app.add_handler(CommandHandler("resume", cmd_any))
-    app.add_handler(CommandHandler("clean", cmd_any))
-    app.add_handler(CommandHandler("stats", cmd_any))
-    app.add_handler(CommandHandler("history", cmd_any))
-    app.add_handler(CommandHandler("ban", cmd_any))
-    app.add_handler(CommandHandler("unban", cmd_any))
-    app.add_handler(CommandHandler("broadcast", cmd_any))
-    app.add_handler(CommandHandler("admins", cmd_any))
-    app.add_handler(MessageHandler(filters.COMMAND, cmd_any))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    app.add_handler(CallbackQueryHandler(on_button))
-    app.add_error_handler(on_error)
-
     print("[+] Bot v1 running. Ctrl+C to stop.")
     print(f"[*] Token: {BOT_TOKEN[:6]}...{BOT_TOKEN[-4:]} len={len(BOT_TOKEN)} | Polling...")
 
-    # auto-restart wrapper
+    # auto-restart wrapper - rebuild app each loop to avoid stopped state
+    from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
+
+    def build_app():
+        _app = Application.builder().token(BOT_TOKEN).build()
+        _app.add_handler(CommandHandler("start", cmd_start))
+        _app.add_handler(CommandHandler("cmds", cmd_any))
+        _app.add_handler(CommandHandler("commands", cmd_any))
+        _app.add_handler(CommandHandler("help", cmd_any))
+        _app.add_handler(CommandHandler("proxy", cmd_any))
+        _app.add_handler(CommandHandler("proxies", cmd_any))
+        _app.add_handler(CommandHandler("addproxy", cmd_any))
+        _app.add_handler(CommandHandler("clearproxy", cmd_any))
+        _app.add_handler(CommandHandler("threads", cmd_any))
+        _app.add_handler(CommandHandler("autoproxy", cmd_any))
+        _app.add_handler(CommandHandler("autoload", cmd_any))
+        _app.add_handler(CommandHandler("stop", cmd_any))
+        _app.add_handler(CommandHandler("cancel", cmd_any))
+        _app.add_handler(CommandHandler("stopcheck", cmd_any))
+        _app.add_handler(CommandHandler("pause", cmd_any))
+        _app.add_handler(CommandHandler("resume", cmd_any))
+        _app.add_handler(CommandHandler("clean", cmd_any))
+        _app.add_handler(CommandHandler("stats", cmd_any))
+        _app.add_handler(CommandHandler("history", cmd_any))
+        _app.add_handler(CommandHandler("ban", cmd_any))
+        _app.add_handler(CommandHandler("unban", cmd_any))
+        _app.add_handler(CommandHandler("broadcast", cmd_any))
+        _app.add_handler(CommandHandler("admins", cmd_any))
+        _app.add_handler(MessageHandler(filters.COMMAND, cmd_any))
+        _app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+        _app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+        _app.add_handler(CallbackQueryHandler(on_button))
+        _app.add_error_handler(on_error)
+        return _app
+
     while True:
         try:
-            app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+            _app = build_app()
+            _app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
             break
         except Exception as e:
             logger.error("Polling crashed: %s — restarting in 5s", e, exc_info=True)
