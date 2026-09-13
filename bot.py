@@ -1929,7 +1929,7 @@ BLAZENXT_BRAND = "<b>BlazeNXT</b>"
 DEVELOPER_BRANDING = 'Developed by : <a href="https://t.me/blaze_nxt">BlazeNXT</a>'  # @blaze_nxt username deeplink
 
 def _build_kb(rows) -> InlineKeyboardMarkup:
-    """rows: list of rows; each row = list of (label, cb) or (label, cb, style)."""
+    """rows: list of rows; each row = list of (label, cb) or (label, cb, style). Supports url buttons."""
     use_style = _CAPS["style"] is not False
     data = []
     for row in rows or []:
@@ -1941,9 +1941,14 @@ def _build_kb(rows) -> InlineKeyboardMarkup:
             cb = item[1] if len(item) > 1 else None
             style = item[2] if len(item) > 2 else None
             kwargs = {}
-            if style and use_style and style in ("primary","success","danger"):
+            # url buttons don't support style in some clients, so skip style for url
+            is_url = isinstance(cb, str) and (cb.startswith("tg://") or cb.startswith("https://") or cb.startswith("http://"))
+            if style and use_style and style in ("primary","success","danger") and not is_url:
                 kwargs["style"] = style
-            line.append(InlineKeyboardButton(label, callback_data=cb, **kwargs))
+            if is_url:
+                line.append(InlineKeyboardButton(label, url=cb, **kwargs))
+            else:
+                line.append(InlineKeyboardButton(label, callback_data=cb, **kwargs))
         if line:
             data.append(line)
     return InlineKeyboardMarkup(data)
@@ -2275,7 +2280,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = user.id
     name = getattr(user, "first_name", None) or getattr(user, "username", None) or str(uid)
     if not is_admin(uid, getattr(user, "username", None)):
-        await reply_menu(msg, f"❌ <b>Access Denied</b>\n\nThis bot is <b>Owner + Admins only</b>.\nContact owner: <code>{OWNER_USERNAME}</code>", [[("⬅️ Back", "menu", "danger")]])
+        await reply_menu(msg, f"❌ <b>Access Denied</b>\n\nThis bot is <b>Owner + Admins only</b>.\nContact owner: <a href=\"tg://user?id={OWNER_ID}\">Owner</a> (<code>{OWNER_ID}</code>) • <a href=\"https://t.me/blaze_nxt\">@blaze_nxt</a>", [[("💬 Contact Owner", "https://t.me/blaze_nxt", "primary")]])
         return
     # Single path — no double message, board completely removed
     try:
@@ -2411,7 +2416,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = user.id
     text = msg.text.strip()
     if not is_admin(uid, getattr(user, "username", None)):
-        await reply_menu(msg, f"❌ <b>Access Denied</b>\nOwner/Admins only.", [[("⬅️ Back", "menu", "danger")]])
+        await reply_menu(msg, f"❌ <b>Access Denied</b>\nOwner/Admins only.\nContact: <a href=\"https://t.me/blaze_nxt\">@blaze_nxt</a> (<code>{OWNER_ID}</code>)", [[("💬 Contact Owner", "https://t.me/blaze_nxt", "primary")]])
         return
     # Compat: if user still has old reply board cached, map its text to inline actions (single message)
     _compat_map = {
@@ -2560,7 +2565,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     uid = user.id
     if not is_admin(uid, getattr(user, "username", None)):
-        await reply_menu(msg, f"❌ <b>Access Denied</b>\nOwner/Admins only.", [[("⬅️ Back", "menu", "danger")]])
+        await reply_menu(msg, f"❌ <b>Access Denied</b>\nOwner/Admins only.\nContact: <a href=\"https://t.me/blaze_nxt\">@blaze_nxt</a> (<code>{OWNER_ID}</code>)", [[("💬 Contact Owner", "https://t.me/blaze_nxt", "primary")]])
         return
     pending = get_pending(uid)
 
