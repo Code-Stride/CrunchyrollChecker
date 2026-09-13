@@ -1450,40 +1450,48 @@ def run_check(text: str, reporter=None, hit_callback=None, uid: int = None) -> d
 
     lock = threading.Lock()
 
+    # USER ISOLATION FIX: each user check gets its own local proxy copy, so one user doesn't starve others
+    # Snapshot global pool at start of check
+    with PROXY_LOCK:
+        local_proxies = list(LIVE_PROXIES)  # copy for this user only
+        local_manual = set(MANUAL_PROXY_URLS)
+    local_idx = [0]  # per-check manual round robin
+
     def next_proxy() -> Optional[dict]:
-        # No nested locks - use PROXY_LOCK only to avoid deadlock
-        with PROXY_LOCK:
-            if not LIVE_PROXIES:
-                return None
-            auto_indices = [i for i, p in enumerate(LIVE_PROXIES) if p.get("https") not in MANUAL_PROXY_URLS]
-            if auto_indices:
-                try:
-                    idx = random.choice(auto_indices)
-                    proxy = LIVE_PROXIES.pop(idx)
-                    AUTO_PROXY_URLS.discard(proxy.get("https", ""))
-                    return proxy
-                except Exception:
-                    try:
-                        for i in list(auto_indices):
-                            try:
-                                proxy = LIVE_PROXIES.pop(i)
-                                AUTO_PROXY_URLS.discard(proxy.get("https",""))
-                                return proxy
-                            except Exception:
-                                continue
-                    except Exception:
-                        pass
-            if LIVE_PROXIES:
-                try:
-                    m_idx = MANUAL_PX_IDX[0] % len(LIVE_PROXIES)
-                    MANUAL_PX_IDX[0] = (MANUAL_PX_IDX[0] + 1) % 1000000
-                    return LIVE_PROXIES[m_idx]
-                except Exception:
-                    try:
-                        return random.choice(LIVE_PROXIES)
-                    except Exception:
-                        return None
+        # Use local copy, not global - isolated per user
+        # Auto proxies: pop from local copy (discard after 1 use per user, but global pool stays for other users)
+        # Manual proxies: round-robin reuse, never discard
+        if not local_proxies:
             return None
+        # try auto first
+        auto_indices = [i for i, p in enumerate(local_proxies) if p.get("https") not in local_manual]
+        if auto_indices:
+            try:
+                idx = random.choice(auto_indices)
+                proxy = local_proxies.pop(idx)
+                return proxy
+            except Exception:
+                try:
+                    for i in sorted(auto_indices, reverse=True):
+                        try:
+                            proxy = local_proxies.pop(i)
+                            return proxy
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+        # fallback to manual round-robin (reuse, never discard)
+        if local_proxies:
+            try:
+                m_idx = local_idx[0] % len(local_proxies)
+                local_idx[0] = (local_idx[0] + 1) % 1000000
+                return local_proxies[m_idx]
+            except Exception:
+                try:
+                    return random.choice(local_proxies)
+                except Exception:
+                    return None
+        return None
 
     def worker(cred: dict):
         # pause support
@@ -1982,48 +1990,24 @@ def _live_feed_block(res: dict) -> str:
     return "\n".join(f"  {esc(x)}" for x in last)
 
 def progress_text(res: dict) -> str:
-    total = res.get("total") or 0
+    total = res.get("total", 0)
     processed = res.get("processed", 0)
-    raw_pct = (processed / total * 100) if total else 0
-    if raw_pct < 10 and raw_pct != 0:
-        pct_str = f"{raw_pct:.1f}"
-        pct = int(raw_pct)
-    else:
-        pct_str = str(int(raw_pct))
-        pct = int(raw_pct)
-    elapsed = res.get("elapsed") or (time.time() - res.get("t0", time.time())) if res.get("t0") else 0
-    cpm = res.get("cpm") if res.get("cpm") is not None else _fmt_cpm_smooth(processed, elapsed)
-    eta = _fmt_eta(total, processed, cpm)
-    elapsed_s = _fmt_duration(elapsed) if elapsed else "0m 0s"
-    twofa = res.get("twofa", 0)
-    clean_stats = res.get("clean_stats", {})
-    legacy = (
-        f"⏳ Crunchyroll {pct_str}% [{_bar(pct)}] ({processed}/{total})\n"
-        f"✅ Hits: {len(res.get('hits', []))} | 🆓 Free: {len(res.get('free', []))} | "
-        f"❌ Bad: {res.get('bad',0)} | ⏳ Rate: {res.get('rate',0)} | ⚠️ Errors: {res.get('err',0)}"
+    pct = int(processed / total * 100) if total else 0
+    hits = len(res.get('hits', []))
+    free = len(res.get('free', []))
+    bad = res.get('bad',0)
+    cpm = res.get('cpm',0)
+    elapsed_s = res.get('elapsed',0)
+    # Simple clean design - less eye pressure
+    return (
+        f"<b>Checking... {processed}/{total} ({pct}%)</b>\n"
+        f"Hits: <code>{hits}</code> | Free: <code>{free}</code> | Bad: <code>{bad}</code>\n"
+        f"CPM: <code>{cpm}</code> | Time: <code>{int(elapsed_s)}s</code> | Proxies: <code>{proxy_count()}</code>\n"
+        f"Live: <code>{res.get('live_feed', [])[-1][:20] if res.get('live_feed') else 'starting'}</code>"
     )
-    success_rate = (len(res.get('hits', [])) / processed * 100) if processed else 0
-    clean_line = ""
-    if clean_stats and clean_stats.get("dup",0) > 0:
-        clean_line = f"🧹 Cleaned: <code>{clean_stats.get('cleaned')}</code> • Dup: <code>{clean_stats.get('dup')}</code> • Invalid: <code>{clean_stats.get('invalid')}</code>\n"
-    premium = (
-        f"╭────────────────────────╮\n"
-        f"│ 📈 <b>CRUNCHYROLL — LIVE</b> │\n"
-        f"╰────────────────────────╯\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"{legacy}\n"
-        f"🔐 2FA: <code>{twofa}</code> | 🌐 Proxies: <code>{proxy_count()}</code> | ✅ Rate: <code>{success_rate:.1f}%</code>\n"
-        f"{clean_line}"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📈 <code>{cpm} cpm</code>  🕒 <code>{elapsed_s}</code>  ⏳ ETA <code>{eta}</code>\n"
-        f"• Checked: <code>{processed}/{total}</code>  • {pct_str}% • ✅ <code>{len(res.get('hits', []))}</code> hits\n"
-        f"📡 <b>Live feed:</b>\n"
-        f"{_live_feed_block(res)}"
-    )
-    return premium
 
 class ProgressReporter:
-    def __init__(self, message, loop: asyncio.AbstractEventLoop, interval: float = 1.8, uid: int = None):
+    def __init__(self, message, loop: asyncio.AbstractEventLoop, interval: float = 3.0, uid: int = None):
         self.message = message
         self.loop = loop
         self.interval = interval
@@ -2142,345 +2126,87 @@ def summary_text(res: dict) -> str:
     hits = len(res.get('hits', []))
     free = len(res.get('free', []))
     bad = res.get('bad', 0)
-    rate = res.get('rate', 0)
-    err = res.get('err', 0)
-    twofa = res.get('twofa', 0)
     total = res.get('total', 0)
-    processed = res.get('processed', 0)
     sec = res.get('seconds', '?')
-    cpm = res.get('cpm', 0)
-    elapsed = res.get('elapsed', 0)
-    if not cpm and elapsed:
-        cpm = _fmt_cpm_smooth(processed, elapsed)
-    legacy = (
-        f"📊 Total: <code>{total}</code> | Processed: <code>{processed}</code>\n"
-        f"✅ Hits: <code>{hits}</code> | 🆓 Free: <code>{free}</code> | "
-        f"❌ Bad: <code>{bad}</code>\n"
-        f"⏳ Rate: <code>{rate}</code> | ⚠️ Errors: <code>{err}</code>\n"
-        f"⏱ Time: <code>{sec}s</code> | 🌐 Live Proxies: <code>{proxy_count()}</code>"
-    )
-    extra = f"🔐 2FA: <code>{twofa}</code> | 📈 Avg: <code>{cpm} cpm</code>" if twofa or cpm else ""
-    extra_block = f"{extra}\n" if extra else ""
-    detailed = ""
-    if res.get("hits"):
-        plans = Counter((h.get("data") or {}).get("plan") or "Premium" for h in res.get("hits", []))
-        plan_line = " • ".join(f"{esc(k)}: <code>{v}</code>" for k,v in plans.items())
-        ccs = Counter((h.get("data") or {}).get("country_name") or (h.get("data") or {}).get("cc") or "Unknown" for h in res.get("hits", []))
-        cc_line = " • ".join(f"{esc(k)}: <code>{v}</code>" for k,v in ccs.most_common(3))
-        total2 = res.get("total", 0) or 1
-        rate2 = len(res.get("hits", [])) / total2 * 100
-        detailed = (
-            f"📊 Plans: {plan_line}\n"
-            f"🌍 Countries: {cc_line}\n"
-            f"✅ Success: <code>{rate2:.1f}%</code> • ⏱ Avg: <code>{res.get('cpm',0)} cpm</code>\n"
-        )
-    clean_stats = res.get("clean_stats", {})
-    clean_block = ""
-    if clean_stats:
-        clean_block = f"🧹 Cleaned: <code>{clean_stats.get('cleaned')}</code> Dup: <code>{clean_stats.get('dup')}</code> Invalid: <code>{clean_stats.get('invalid')}</code>\n"
     return (
-        "╭────────────────────────╮\n"
-        "│ ✅ <b>SCAN COMPLETE!</b> │\n"
-        "╰────────────────────────╯\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n"
-        f"{legacy}\n"
-        f"{extra_block}"
-        f"{clean_block}"
-        f"{detailed}"
-        "━━━━━━━━━━━━━━━━━━━━━\n"
-        "🔥 <b>CRUNCHYROLL</b>\n"
-        f"{DEVELOPER_BRANDING}"
+        f"<b>Check Complete</b>\n"
+        f"Total: <code>{total}</code> | Hits: <code>{hits}</code> | Free: <code>{free}</code> | Bad: <code>{bad}</code>\n"
+        f"Time: <code>{sec}s</code> | CPM: <code>{res.get('cpm',0)}</code>\n"
+        f"Proxies: <code>{proxy_count()}</code>"
     )
 
 def status_text() -> str:
-    ac = bool(STORE.get_setting("auto_check", True)) if STORE else True
     daily = load_daily_stats()
     return (
-        "📊 <b>Bot Status</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n"
-        f"👑 Owner: <code>{esc(OWNER_USERNAME)}</code>\n"
-        f"🌐 Live Proxies: <code>{proxy_count()}</code> | Pool: <code>{pool_size()}</code>\n"
-        f"   ↳ Auto: <code>{len(AUTO_PROXY_URLS)}</code> | Manual: <code>{len(MANUAL_PROXY_URLS)}</code>\n"
-        f"⚙️ Auto-Check: <code>{'ON' if ac else 'OFF'}</code> | Auto-Load: <code>{'ON' if STORE.get_setting('auto_proxy', True) else 'OFF'}</code>\n"
-        f"👥 Active Users: <code>{STORE.active_user_count() if STORE else 0}</code> | Banned: <code>{len(BANNED_USERS)}</code>\n"
-        f"🧵 Threads: <code>{THREADS}</code> (max {MAX_THREADS_USER})\n"
-        f"🔁 Proxy Refresh: <code>{PROXY_REFRESH_MINUTES} min</code> | Timeout: <code>{PROXY_TEST_TIMEOUT}s</code>\n"
-        f"⏱ Uptime: <code>{uptime()}</code>\n"
-        f"✅ Checks Session: <code>{CHECKS_DONE}</code> | Hits: <code>{TOTAL_HITS}</code>\n"
-        f"📅 Today: <code>{daily.get('hits',0)} hits / {daily.get('checks',0)} checks / {daily.get('total',0)} scans</code>\n"
-        f"🧩 SOCKS5: <code>{'Yes' if SOCKS5_OK else 'No'}</code> | Flask: <code>{'Yes' if FLASK_OK else 'No'}</code>\n"
-        f"💾 Scores: <code>{len(PROXY_SCORES)}</code> | CPM Avg: <code>{int(sum(CPM_HISTORY)/len(CPM_HISTORY)) if CPM_HISTORY else 0}</code>\n"
-        f"💎 Mode: <code>{'Premium Only' if PREMIUM_ONLY_DEFAULT else 'All'}</code>\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n"
-        f"{DEVELOPER_BRANDING}"
+        f"<b>Bot Status</b>\n"
+        f"Live: <code>{proxy_count()}</code> | Pool: <code>{pool_size()}</code>\n"
+        f"Auto: <code>{len(AUTO_PROXY_URLS)}</code> | Manual: <code>{len(MANUAL_PROXY_URLS)}</code>\n"
+        f"Threads: <code>{THREADS}</code> | Uptime: <code>{uptime()}</code>\n"
+        f"Checks: <code>{CHECKS_DONE}</code> | Hits: <code>{TOTAL_HITS}</code>\n"
+        f"Today: <code>{daily.get('hits',0)} hits / {daily.get('total',0)} scans</code>\n"
+        f"Banned: <code>{len(BANNED_USERS)}</code>"
     )
 
 def help_text() -> str:
     return (
-        "╭────────────────────────╮\n"
-        "│  📖 <b>HELP</b>  │\n"
-        "╰────────────────────────╯\n"
-        "🔥 <b>Crunchyroll Checker</b> — Powerful, Secure, Fast\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n"
-        "👑 <b>Owner + Admins Only</b> • 24x7 Auto Proxy • 500 Threads • Smart Scoring\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n"
-        "┌─ <b>🚀 QUICK START</b> ──────────┐\n"
-        "│ 💎 <b>Check Account</b> → Paste <code>EMAIL:PASS</code>\n"
-        "│   └ One per line • Ex: <code>a@b.com:pass123</code>\n"
-        "│ 📂 <b>Check File</b> → Send <code>.txt/.csv/.log/.json</code>\n"
-        "│   └ Auto-extracts 10k+ lines 📦\n"
-        "│ 🧹 <b>Clean Combos</b> → Dedup + Clean\n"
-        "│ ⏳ LIVE scan → Hits <b>instant</b> ⚡ + <code>TXT+JSON+CSV</code> export\n"
-        "└────────────────────────┘\n"
-        "┌─ <b>🎛️ BUTTONS</b> ─────────────┐\n"
-        "│ 💎 Check • 📂 File • 🧹 Clean\n"
-        "│ 📖 Help • 📊 Stats • 🛠️ Tools\n"
-        "│ ⚙️ Proxy Settings (Proxies/Threads/Auto)\n"
-        "│ 👥 Admins (Owner only: Add/Remove/Ban)\n"
-        "└────────────────────────┘\n"
-        "┌─ <b>⌨️ COMMANDS</b> ────────────┐\n"
-        "│ <code>/start</code> — Main menu\n"
-        "│ <code>/cmds</code> / <code>/help</code> — This help\n"
-        "│ <code>/proxy</code> — Proxy Settings\n"
-        "│ <code>/addproxy</code> — Upload proxies (text/file/URL)\n"
-        "│ <code>/clearproxy</code> — Clear pool\n"
-        "│ <code>/threads</code> — Set 50/100/200/300/500\n"
-        "│ <code>/autoproxy</code> — Toggle 24x7 auto\n"
-        "│ <code>/clean</code> — Clean combos file\n"
-        "│ <code>/stop</code> — Stop check\n"
-        "│ <code>/pause</code> / <code>/resume</code> — Pause/Resume\n"
-        "│ <code>/stats</code> — Detailed stats\n"
-        "│ <code>/history</code> — Last checks\n"
-        "│ <code>/admins</code> — List admins\n"
-        "│ <code>/addadmin 123</code> / <code>@user</code> — Owner\n"
-        "│ <code>/removeadmin 123</code> / <code>@user</code>\n"
-        "│ <code>/ban 123</code> / <code>/unban 123</code> — Owner\n"
-        "│ <code>/broadcast msg</code> — Owner broadcast\n"
-        "└────────────────────────┘\n"
-        "┌─ <b>⚙️ PROXY SYSTEM v2</b> ────────┐\n"
-        "│ ♻️ Auto: 12 sources, 5min, 500 live, watchdog 45s\n"
-        "│ 📥 Manual: <code>ip:port</code> / <code>user:pass@ip:port</code>\n"
-        "│   Text/file/URL — auto-detect + scoring\n"
-        "│ 🧵 Threads 50/100/200/300/500 • Smart scoring\n"
-        "│ 📊 Proxy Scores persistent • Auto discard auto only\n"
-        "└────────────────────────┘\n"
-        "┌─ <b>🎯 CHECKER v2</b> ────────────┐\n"
-        "│ 150 default → 500 max • 800-1000 cpm\n"
-        "│ Deep: Fan/Mega/Ultimate • Expiry/Price/Trial\n"
-        "│ 2FA/Rate/Errors handled • Instant hits\n"
-        "│ Retry with new proxy • Clean/Dedup • Pause/Resume\n"
-        "│ Daily stats • History • CPM smoothing\n"
-        "└────────────────────────┘\n"
-        "╭────────────────────────╮\n"
-        "│  🔥 <b>CRUNCHYROLL</b> • UPGRADED  │\n"
-        "╰────────────────────────╯\n"
-        f"{DEVELOPER_BRANDING} • 👤 Owner: <code>{esc(OWNER_USERNAME)}</code>"
+        f"<b>Crunchyroll Checker - Help</b>\n\n"
+        f"Check Account - Send EMAIL:PASS\n"
+        f"Check File - Send .txt file (unlimited)\n"
+        f"Clean Combos - Dedup + clean\n\n"
+        f"Commands:\n"
+        f"/start - Menu\n"
+        f"/stop - Stop check\n"
+        f"/proxy - Proxy settings\n"
+        f"/stats - Status\n\n"
+        f"Proxies auto 24x7 - {proxy_count()} live"
     )
 
 def welcome_premium_text(uid: int, name: str) -> str:
     try:
         owner_flag = is_owner(uid)
-    except Exception:
+    except:
         owner_flag = (uid == OWNER_ID)
-    if owner_flag:
-        access_line = "👑 <b>Owner</b> • <code>Unlimited</code> ♾️"
-    else:
-        try:
-            if is_admin(uid, name):
-                access_line = "✅ <b>Admin Access</b> • <code>Unlimited</code> 🎉"
-            else:
-                access_line = "✅ <b>Free Access</b> • <code>Unlimited</code> 🎉"
-        except Exception:
-            access_line = "✅ <b>Free Access</b> • <code>Unlimited</code> 🎉"
-    daily = load_daily_stats()
+    role = "Owner" if owner_flag else "User"
     return (
-        "╭────────────────────────╮\n"
-        "│  🔥 <b>CRUNCHYROLL</b> 🔥  │\n"
-        "│  <i>Premium Checker • UPGRADED</i>   │\n"
-        "╰────────────────────────╯\n"
-        f"👋 Hey <b>{esc(name)}</b>\n"
-        f"{access_line}\n"
-        "┌─ <b>STATS</b> ────────────────┐\n"
-        f"│ 🌐 Proxies: <code>{proxy_count()} live</code> • 📦 Pool: <code>{pool_size()}</code>\n"
-        f"│   ↳ Auto: <code>{len(AUTO_PROXY_URLS)}</code> Manual: <code>{len(MANUAL_PROXY_URLS)}</code>\n"
-        f"│ 👥 Users: <code>{STORE.active_user_count() if STORE else 0}</code> • 🧵 Threads: <code>{THREADS}</code> (max 500)\n"
-        f"│ ⏱ Uptime: <code>{uptime()}</code> • ✅ Checks: <code>{CHECKS_DONE}</code> Hits: <code>{TOTAL_HITS}</code>\n"
-        f"│ 📅 Today: <code>{daily.get('hits',0)} hits / {daily.get('total',0)} scans</code>\n"
-        "└────────────────────────┘\n"
-        "👇 <i>Choose an action — buttons below</i> 👇\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n"
-        f"{DEVELOPER_BRANDING}"
+        f"Hi <b>{esc(name)}</b> - {role}\n"
+        f"Proxies: <code>{proxy_count()} live</code> | Pool: <code>{pool_size()}</code>\n"
+        f"Checks: <code>{CHECKS_DONE}</code> | Hits: <code>{TOTAL_HITS}</code>\n"
+        f"Uptime: <code>{uptime()}</code>\n\n"
+        f"Use buttons below to start."
     )
-
-# ===================== BUTTON MENUS =====================
-CUSTOM_EMOJI_ID = "5319302927281177662"
-_CAPS = {"icon": None, "style": None}
-PREMIUM_EMOJI = {}
-
-def _premium_wrap(text: str) -> str:
-    return text
-
-BLAZENXT_RIBBON = ""
-BLAZENXT_BRAND = "<b>BlazeNXT</b>"
-DEVELOPER_BRANDING = 'Developed by : <a href="https://t.me/blaze_nxt">BlazeNXT</a>'
-
-def _build_kb(rows) -> InlineKeyboardMarkup:
-    use_style = _CAPS["style"] is not False
-    data = []
-    for row in rows or []:
-        line = []
-        for item in row:
-            if not item:
-                continue
-            label = item[0]
-            cb = item[1] if len(item) > 1 else None
-            style = item[2] if len(item) > 2 else None
-            kwargs = {}
-            is_url = isinstance(cb, str) and (cb.startswith("tg://") or cb.startswith("https://") or cb.startswith("http://"))
-            if style and use_style and style in ("primary","success","danger") and not is_url:
-                kwargs["style"] = style
-            if is_url:
-                line.append(InlineKeyboardButton(label, url=cb, **kwargs))
-            else:
-                line.append(InlineKeyboardButton(label, callback_data=cb, **kwargs))
-        if line:
-            data.append(line)
-    return InlineKeyboardMarkup(data)
-
-async def _send_menu(msg, text: str, rows, edit: bool) -> bool:
-    text = text
-    for _attempt in range(4):
-        use_icon = _CAPS["icon"] is not False
-        use_style = _CAPS["style"] is not False
-        kb = _build_kb(rows)
-        try:
-            if edit:
-                await msg.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
-            else:
-                await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
-            if use_icon:
-                _CAPS["icon"] = True
-            if use_style:
-                _CAPS["style"] = True
-            return True
-        except BadRequest as e:
-            s = str(e).lower()
-            if "message is not modified" in s:
-                return True
-            if use_icon and ("emoji" in s or "icon" in s):
-                _CAPS["icon"] = False
-                continue
-            if use_style and "style" in s:
-                _CAPS["style"] = False
-                continue
-            logger.warning("menu send failed: %s", e)
-            return False
-    return False
-
-async def reply_menu(msg, text, rows):
-    return await _send_menu(msg, text, rows, edit=False)
-
-async def edit_menu(msg, text, rows):
-    return await _send_menu(msg, text, rows, edit=True)
-
-def _build_reply_kb(rows, resize=True, one_time=False):
-    return None
-def main_reply_kb(is_owner: bool):
-    return None
-def owner_reply_kb():
-    return None
-def gen_reply_kb():
-    return None
-REPLY_TEXT_MAP = {}
-
-async def _send_reply_menu(msg, text: str, reply_kb, inline_rows=None):
-    return False
-async def _edit_or_send_reply(msg, text: str, reply_kb):
-    return False
-
-PENDING: Dict[int, dict] = {}
-PENDING_LOCK = threading.Lock()
-
-def set_pending(uid: int, kind: str, **kw):
-    with PENDING_LOCK:
-        PENDING[uid] = {"kind": kind, **kw}
-
-def get_pending(uid: int):
-    with PENDING_LOCK:
-        return PENDING.get(uid)
-
-def clear_pending(uid: int):
-    with PENDING_LOCK:
-        PENDING.pop(uid, None)
-
-def _has_access(uid: int, username: str = None) -> bool:
-    try:
-        return is_admin(uid, username)
-    except Exception:
-        try:
-            return is_admin(uid)
-        except Exception:
-            return False
-
-def _is_owner(uid: int, username: str = None) -> bool:
-    try:
-        if uid and OWNER_ID and uid == OWNER_ID:
-            return True
-    except Exception:
-        pass
-    try:
-        if username and OWNER_USERNAME:
-            if str(username).lstrip("@").lower() == OWNER_USERNAME.lstrip("@").lower():
-                return True
-    except Exception:
-        pass
-    return False
-
-# ===================== MENU DEFINITIONS v1 =====================
-AIO_SERVICES = [
-    [("🍥 CRUNCHYROLL", "check", "success")],
-]
 
 def menu_main(uid: int, username: str = None):
     try:
         header = welcome_premium_text(uid, str(username or uid))
-    except Exception:
-        header = "╭────────────────────────╮\n│  🔥 <b>CRUNCHYROLL</b> 🔥  │\n╰────────────────────────╯"
+    except:
+        header = "<b>Crunchyroll Checker</b>"
     rows = [
-        [("💎 Check Account", "check", "success"), ("📂 Check File", "file", "primary")],
-        [("🧹 Clean Combos", "cleancombos", "primary"), ("🛠️ Tools", "tools", "primary")],
-        [("📖 How To Use", "help", "primary"), ("📊 Bot Stats", "status", "primary")],
-        [("⚙️ Proxy Settings", "proxysettings", "primary")],
+        [("Check Account", "check", "success"), ("Check File", "file", "primary")],
+        [("Clean Combos", "cleancombos", "primary"), ("Stats", "status", "primary")],
+        [("Proxy Settings", "proxysettings", "primary"), ("Help", "help", "primary")],
     ]
     try:
         if is_owner(uid) or uid == OWNER_ID:
-            rows.append([("👥 Admins", "admins", "primary")])
-    except Exception:
+            rows.append([("Admins", "admins", "primary")])
+    except:
         if uid == OWNER_ID:
-            rows.append([("👥 Admins", "admins", "primary")])
+            rows.append([("Admins", "admins", "primary")])
     return header, rows
 
 def menu_owner():
     auto_on = bool(STORE.get_setting("auto_proxy", True)) if STORE else True
-    daily = load_daily_stats()
     header = (
-        "⚙️ <b>Proxy Settings — Auto Load 100x Fast</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📊 Status: <code>{'ON' if proxy_count() else 'OFF'}</code> • 📦 Pool: <code>{pool_size()}</code> • 🌐 Live: <code>{proxy_count()}</code>\n"
-        f"   ↳ Auto: <code>{len(AUTO_PROXY_URLS)}</code> • Manual: <code>{len(MANUAL_PROXY_URLS)}</code> • Scores: <code>{len(PROXY_SCORES)}</code>\n"
-        f"🔄 Auto Load: <code>{'ON' if auto_on else 'OFF'}</code> • 🧵 Threads: <code>{THREADS}</code> (max {MAX_THREADS_USER})\n"
-        f"⚡ Speed: <code>100x Fast</code> • 1:1 Proxy per Account • Retry 2x\n"
-        f"📅 Today: <code>{daily.get('hits',0)} hits / {daily.get('total',0)} scans</code>\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n"
-        "Format: <code>user:pass@ip:port</code> or <code>ip:port</code> or URL\n"
-        "Auto: 12 sources • Manual: text/file/URL"
+        f"<b>Proxy Settings</b>\n"
+        f"Live: <code>{proxy_count()}</code> | Pool: <code>{pool_size()}</code>\n"
+        f"Auto: <code>{len(AUTO_PROXY_URLS)}</code> | Manual: <code>{len(MANUAL_PROXY_URLS)}</code>\n"
+        f"Auto Load: <code>{'ON' if auto_on else 'OFF'}</code> | Threads: <code>{THREADS}</code>\n"
     )
     rows = [
-        [("🔄 Refresh Auto", "refresh", "primary"), ("📥 Upload Proxies", "addpx", "success")],
-        [("🌐 Import URL", "importurl", "primary"), ("📊 Proxy Stats", "proxystats", "primary")],
-        [("❌ Disable Proxies", "disableproxies", "danger"), ("🧹 Clear Proxies", "clearpool", "danger")],
-        [("🔄 Auto Load: ON" if auto_on else "⏸️ Auto Load: OFF", "autoproxy", "primary"), ("🧵 Set Threads", "setthreads", "primary")],
-        [("⬅️ Back", "menu", "danger")],
+        [("Refresh Auto", "refresh", "primary"), ("Upload Proxies", "addpx", "success")],
+        [("Import URL", "importurl", "primary"), ("Proxy Stats", "proxystats", "primary")],
+        [("Disable Proxies", "disableproxies", "danger"), ("Clear Proxies", "clearpool", "danger")],
+        [("Auto Load ON" if auto_on else "Auto Load OFF", "autoproxy", "primary"), ("Set Threads", "setthreads", "primary")],
+        [("Back", "menu", "danger")],
     ]
     return header, rows
 
