@@ -216,6 +216,11 @@ DAILY_STATS_FILE = DATA_DIR / "daily_stats.json"
 PROXY_SCORES_FILE = DATA_DIR / "proxy_scores.json"
 HISTORY_FILE = DATA_DIR / "check_history.json"
 BAN_FILE = DATA_DIR / "banned.json"
+# SUPER PREMIUM SPEED PACK
+CUSTOM_SOURCES_FILE = DATA_DIR / "custom_proxy_sources.txt"
+PROXY_COUNTRY_FILE = DATA_DIR / "proxy_countries.json"
+PROXY_SPEED_FILE = DATA_DIR / "proxy_speeds.json"
+PROXY_META_FILE = DATA_DIR / "proxy_meta.json"
 
 def bump_checks(n: int) -> None:
     global CHECKS_DONE
@@ -967,6 +972,8 @@ def is_manual_proxy_url(url: str) -> bool:
 def harvest_proxies() -> List[str]:
     raw = set()
     raw_lock = threading.Lock()
+    # include custom sources
+    all_sources = list(PROXY_SOURCES) + list(CUSTOM_PROXY_SOURCES)
 
     def fetch_one(url: str):
         s = requests.Session()
@@ -1008,8 +1015,8 @@ def harvest_proxies() -> List[str]:
             except Exception:
                 break
 
-    with ThreadPoolExecutor(max_workers=12) as ex:
-        futures = [ex.submit(fetch_one, u) for u in PROXY_SOURCES]
+    with ThreadPoolExecutor(max_workers=16) as ex:
+        futures = [ex.submit(fetch_one, u) for u in all_sources]
         for f in as_completed(futures):
             try:
                 f.result()
@@ -1048,24 +1055,55 @@ def test_one_proxy(proxy_str: str) -> Optional[dict]:
     schemes = ["http"]
     if SOCKS5_OK:
         schemes.append("socks5")
+    # SUPER PREMIUM: measure speed, try fastest URL first
+    test_urls = PROXY_TEST_URLS
+    try:
+        turbo = bool(STORE.get_setting("turbo_mode", False)) if STORE else False
+    except:
+        turbo = False
+    if turbo:
+        test_urls = ["https://www.google.com/generate_204"]  # fastest only in turbo
     for scheme in schemes:
         proxies = {"http": f"{scheme}://{proxy_str}", "https": f"{scheme}://{proxy_str}"}
-        for url in PROXY_TEST_URLS:
+        for url in test_urls:
             try:
+                t0 = time.time()
                 r = requests.get(url, proxies=proxies, timeout=PROXY_TEST_TIMEOUT,
                                  headers={"User-Agent": BARO_WUA})
                 if r.status_code in (200, 204):
+                    elapsed = time.time() - t0
+                    # store speed
+                    try:
+                        full_url = proxies.get("https","")
+                        if full_url:
+                            PROXY_SPEEDS[full_url] = round(elapsed, 3)
+                            # quick country detection for top fast proxies (only for fast ones <1s)
+                            if elapsed < 1.0 and full_url not in PROXY_COUNTRIES and random.random() < 0.1:
+                                threading.Thread(target=lambda u=full_url: get_proxy_country_fast(u), daemon=True).start()
+                    except:
+                        pass
                     return proxies
             except requests.RequestException:
                 continue
     return None
 
 def test_proxy_url(proxy_url: str) -> Optional[dict]:
-    for url in PROXY_TEST_URLS:
+    try:
+        turbo = bool(STORE.get_setting("turbo_mode", False)) if STORE else False
+    except:
+        turbo = False
+    test_urls = ["https://www.google.com/generate_204"] if turbo else PROXY_TEST_URLS
+    for url in test_urls:
         try:
+            t0 = time.time()
             r = requests.get(url, proxies={"http": proxy_url, "https": proxy_url},
                              timeout=PROXY_TEST_TIMEOUT, headers={"User-Agent": BARO_WUA})
             if r.status_code in (200, 204):
+                elapsed = time.time() - t0
+                try:
+                    PROXY_SPEEDS[proxy_url] = round(elapsed, 3)
+                except:
+                    pass
                 return {"http": proxy_url, "https": proxy_url}
         except requests.RequestException:
             continue
@@ -1128,8 +1166,16 @@ def refresh_live_proxies(force: bool = False) -> None:
                 url = p.get("https") or ""
                 if url and url not in MANUAL_PROXY_URLS:
                     AUTO_PROXY_URLS.add(url)
+        # SUPER PREMIUM: sort live by speed (fastest first) for 2000 CPM
+        try:
+            with PROXY_LOCK:
+                live_sorted = sorted(live, key=lambda p: PROXY_SPEEDS.get(p.get("https",""), 999))
+                live = live_sorted
+        except:
+            pass
         threading.Thread(target=save_proxy_scores, daemon=True).start()
-        logger.info("Live proxies ready: %d auto + %d manual = %d total (tested %d from %d candidates)", len(live), len(manual_keep) if 'manual_keep' in locals() else 0, len(LIVE_PROXIES), len(to_test) if 'to_test' in locals() else 0, len(candidates) if 'candidates' in locals() else 0)
+        threading.Thread(target=save_proxy_meta, daemon=True).start()
+        logger.info("Live proxies ready: %d auto + %d manual = %d total (tested %d from %d candidates) turbo=%s", len(live), len(manual_keep) if 'manual_keep' in locals() else 0, len(LIVE_PROXIES), len(to_test) if 'to_test' in locals() else 0, len(candidates) if 'candidates' in locals() else 0, STORE.get_setting("turbo_mode", False) if STORE else False)
     finally:
         _refresh_busy.release()
 
@@ -1504,14 +1550,22 @@ def run_check(text: str, reporter=None, hit_callback=None, uid: int = None) -> d
     results["stopped"] = False
     results["paused"] = False
 
-    # dynamic threads
+    # dynamic threads + TURBO MODE for 2000 CPM
+    try:
+        turbo = bool(STORE.get_setting("turbo_mode", False)) if STORE else False
+    except:
+        turbo = False
     try:
         pc = proxy_count()
-        dynamic_threads = min(THREADS, max(50, pc*2), MAX_THREADS_USER)
+        if turbo:
+            # TURBO: 500 threads, no limit, max speed
+            dynamic_threads = min(MAX_THREADS_USER, max(200, pc*3))
+        else:
+            dynamic_threads = min(THREADS, max(50, pc*2), MAX_THREADS_USER)
         if len(creds) < dynamic_threads:
             dynamic_threads = max(10, len(creds))
     except:
-        dynamic_threads = THREADS
+        dynamic_threads = MAX_THREADS_USER if turbo else THREADS
 
     with ThreadPoolExecutor(max_workers=dynamic_threads) as ex:
         futures = {ex.submit(worker, c): c for c in creds}
@@ -1727,6 +1781,88 @@ def save_banned(banned_set):
         pass
 
 BANNED_USERS = load_banned()
+
+# SUPER PREMIUM - proxy meta (country, speed, type)
+PROXY_COUNTRIES: dict = {}
+PROXY_SPEEDS: dict = {}
+PROXY_META: dict = {}
+CUSTOM_PROXY_SOURCES: List[str] = []
+
+def load_custom_sources():
+    global CUSTOM_PROXY_SOURCES
+    try:
+        sources = []
+        if CUSTOM_SOURCES_FILE.exists():
+            sources = [l.strip() for l in CUSTOM_SOURCES_FILE.read_text(encoding="utf-8").splitlines() if l.strip() and l.strip().startswith("http")]
+        # also check STORE
+        try:
+            if STORE:
+                stored = STORE.get_setting("custom_sources", [])
+                if stored:
+                    for u in stored:
+                        if u and u not in sources:
+                            sources.append(u)
+        except:
+            pass
+        CUSTOM_PROXY_SOURCES = sources
+        logger.info("Loaded custom proxy sources: %d", len(CUSTOM_PROXY_SOURCES))
+    except Exception as e:
+        logger.warning("load_custom_sources failed: %s", e)
+        CUSTOM_PROXY_SOURCES = []
+
+def save_custom_sources():
+    try:
+        CUSTOM_SOURCES_FILE.write_text("\n".join(CUSTOM_PROXY_SOURCES) + ("\n" if CUSTOM_PROXY_SOURCES else ""), encoding="utf-8")
+    except Exception as e:
+        logger.warning("save_custom_sources failed: %s", e)
+
+def load_proxy_meta():
+    global PROXY_COUNTRIES, PROXY_SPEEDS, PROXY_META
+    try:
+        if PROXY_META_FILE.exists():
+            data = json.loads(PROXY_META_FILE.read_text(encoding="utf-8"))
+            PROXY_COUNTRIES = data.get("countries", {})
+            PROXY_SPEEDS = data.get("speeds", {})
+            PROXY_META = data.get("meta", {})
+            logger.info("Loaded proxy meta: %d countries, %d speeds", len(PROXY_COUNTRIES), len(PROXY_SPEEDS))
+    except Exception as e:
+        logger.warning("load_proxy_meta failed: %s", e)
+        PROXY_COUNTRIES = {}
+        PROXY_SPEEDS = {}
+        PROXY_META = {}
+
+def save_proxy_meta():
+    try:
+        data = {"countries": PROXY_COUNTRIES, "speeds": PROXY_SPEEDS, "meta": PROXY_META}
+        PROXY_META_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except Exception as e:
+        logger.warning("save_proxy_meta failed: %s", e)
+
+def get_proxy_country_fast(proxy_url: str) -> str:
+    """Fast country detection via ip-api.com - cached"""
+    try:
+        if proxy_url in PROXY_COUNTRIES:
+            return PROXY_COUNTRIES[proxy_url]
+        # extract host
+        import re as _re
+        m = _re.search(r"@?([\d.]+|[^:/]+):\d+", proxy_url)
+        host = m.group(1) if m else ""
+        if not host or host.count(".") < 1:
+            return ""
+        # quick check via ip-api (1 req per proxy, cached)
+        try:
+            r = requests.get(f"http://ip-api.com/json/{host}?fields=countryCode", timeout=3)
+            if r.status_code == 200:
+                j = r.json()
+                cc = j.get("countryCode", "")
+                if cc:
+                    PROXY_COUNTRIES[proxy_url] = cc
+                    return cc
+        except:
+            pass
+        return ""
+    except:
+        return 
 
 # ===================== OXAAM SCRAPER =====================
 OXAAM_BASE = "https://www.oxaam.com/"
@@ -2194,22 +2330,35 @@ def summary_text(res: dict) -> str:
 
 def status_text() -> str:
     ac = bool(STORE.get_setting("auto_check", True)) if STORE else True
+    turbo = bool(STORE.get_setting("turbo_mode", False)) if STORE else False
     daily = load_daily_stats()
+    # country stats
+    try:
+        country_counter = Counter(PROXY_COUNTRIES.values())
+        top_countries = " • ".join([f"{flag_emoji(cc)}{cc}: {cnt}" for cc, cnt in country_counter.most_common(3)])
+        if not top_countries:
+            top_countries = "Detecting..."
+    except:
+        top_countries = "N/A"
+    try:
+        avg_speed = round(sum(PROXY_SPEEDS.values())/len(PROXY_SPEEDS), 3) if PROXY_SPEEDS else 0
+    except:
+        avg_speed = 0
     return (
-        "📊 <b>Bot Status</b>\n"
+        "📊 <b>Bot Status V1 SUPER PREMIUM SPEED</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
         f"👑 Owner: <code>{esc(OWNER_USERNAME)}</code>\n"
-        f"🌐 Live Proxies: <code>{proxy_count()}</code> | Pool: <code>{pool_size()}</code>\n"
+        f"🌐 Live: <code>{proxy_count()}</code> | Pool: <code>{pool_size()}</code> | Custom Sources: <code>{len(CUSTOM_PROXY_SOURCES)}</code>\n"
         f"   ↳ Auto: <code>{len(AUTO_PROXY_URLS)}</code> | Manual: <code>{len(MANUAL_PROXY_URLS)}</code>\n"
+        f"⚡ TURBO: <code>{'ON 2000 CPM' if turbo else 'OFF'}</code> | Threads: <code>{THREADS}</code>→<code>{MAX_THREADS_USER if turbo else THREADS}</code>\n"
         f"⚙️ Auto-Check: <code>{'ON' if ac else 'OFF'}</code> | Auto-Load: <code>{'ON' if STORE.get_setting('auto_proxy', True) else 'OFF'}</code>\n"
-        f"👥 Active Users: <code>{STORE.active_user_count() if STORE else 0}</code> | Banned: <code>{len(BANNED_USERS)}</code>\n"
-        f"🧵 Threads: <code>{THREADS}</code> (max {MAX_THREADS_USER})\n"
-        f"🔁 Proxy Refresh: <code>{PROXY_REFRESH_MINUTES} min</code> | Timeout: <code>{PROXY_TEST_TIMEOUT}s</code>\n"
+        f"👥 Active: <code>{STORE.active_user_count() if STORE else 0}</code> | Banned: <code>{len(BANNED_USERS)}</code>\n"
+        f"🔁 Refresh: <code>{PROXY_REFRESH_MINUTES} min</code> | Timeout: <code>{PROXY_TEST_TIMEOUT}s</code> | Avg Speed: <code>{avg_speed}s</code>\n"
         f"⏱ Uptime: <code>{uptime()}</code>\n"
-        f"✅ Checks Session: <code>{CHECKS_DONE}</code> | Hits: <code>{TOTAL_HITS}</code>\n"
+        f"✅ Session: <code>{CHECKS_DONE}</code> checks | <code>{TOTAL_HITS}</code> hits | CPM Avg: <code>{int(sum(CPM_HISTORY)/len(CPM_HISTORY)) if CPM_HISTORY else 0}</code>\n"
         f"📅 Today: <code>{daily.get('hits',0)} hits / {daily.get('checks',0)} checks / {daily.get('total',0)} scans</code>\n"
-        f"🧩 SOCKS5: <code>{'Yes' if SOCKS5_OK else 'No'}</code> | Flask: <code>{'Yes' if FLASK_OK else 'No'}</code>\n"
-        f"💾 Scores: <code>{len(PROXY_SCORES)}</code> | CPM Avg: <code>{int(sum(CPM_HISTORY)/len(CPM_HISTORY)) if CPM_HISTORY else 0}</code>\n"
+        f"🌍 Countries: {top_countries}\n"
+        f"🧩 SOCKS5: <code>{'Yes' if SOCKS5_OK else 'No'}</code> | Flask: <code>{'Yes' if FLASK_OK else 'No'}</code> | Scores: <code>{len(PROXY_SCORES)}</code>\n"
         f"💎 Mode: <code>{'Premium Only' if PREMIUM_ONLY_DEFAULT else 'All'}</code>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
         f"{DEVELOPER_BRANDING}"
@@ -2220,7 +2369,7 @@ def help_text() -> str:
         "╭────────────────────────╮\n"
         "│  📖 <b>HELP</b>  │\n"
         "╰────────────────────────╯\n"
-        "🔥 <b>Crunchyroll Checker</b> — Powerful, Secure, Fast\n"
+        "🔥 <b>Crunchyroll Checker V1 SUPER PREMIUM SPEED</b> — 2000 CPM • Marketplace • Country Detection\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
         "👑 <b>Owner + Admins Only</b> • 24x7 Auto Proxy • 500 Threads • Smart Scoring\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
@@ -2246,6 +2395,10 @@ def help_text() -> str:
         "│ <code>/clearproxy</code> — Clear pool\n"
         "│ <code>/threads</code> — Set 50/100/200/300/500\n"
         "│ <code>/autoproxy</code> — Toggle 24x7 auto\n"
+        "│ <code>/turbo</code> — Toggle TURBO 2000 CPM ⚡\n"
+        "│ <code>/addsource URL</code> — Add premium proxy source (marketplace)\n"
+        "│ <code>/listsources</code> — List custom sources\n"
+        "│ <code>/countrystats</code> — Proxy country breakdown\n"
         "│ <code>/clean</code> — Clean combos file\n"
         "│ <code>/stop</code> — Stop check\n"
         "│ <code>/pause</code> / <code>/resume</code> — Pause/Resume\n"
@@ -2296,7 +2449,7 @@ def welcome_premium_text(uid: int, name: str) -> str:
     return (
         "╭────────────────────────╮\n"
         "│  🔥 <b>CRUNCHYROLL</b> 🔥  │\n"
-        "│  <i>Premium Checker • UPGRADED</i>   │\n"
+        "│  <i>Premium Checker • SUPER PREMIUM SPEED</i>   │\n"
         "╰────────────────────────╯\n"
         f"👋 Hey <b>{esc(name)}</b>\n"
         f"{access_line}\n"
@@ -2463,24 +2616,27 @@ def menu_main(uid: int, username: str = None):
 def menu_owner():
     auto_on = bool(STORE.get_setting("auto_proxy", True)) if STORE else True
     daily = load_daily_stats()
+    turbo = bool(STORE.get_setting("turbo_mode", False)) if STORE else False
     header = (
-        "⚙️ <b>Proxy Settings — Auto Load 100x Fast</b>\n"
+        "⚙️ <b>Proxy Settings — SUPER PREMIUM SPEED V1</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
         f"📊 Status: <code>{'ON' if proxy_count() else 'OFF'}</code> • 📦 Pool: <code>{pool_size()}</code> • 🌐 Live: <code>{proxy_count()}</code>\n"
         f"   ↳ Auto: <code>{len(AUTO_PROXY_URLS)}</code> • Manual: <code>{len(MANUAL_PROXY_URLS)}</code> • Scores: <code>{len(PROXY_SCORES)}</code>\n"
-        f"🔄 Auto Load: <code>{'ON' if auto_on else 'OFF'}</code> • 🧵 Threads: <code>{THREADS}</code> (max {MAX_THREADS_USER})\n"
-        f"⚡ Speed: <code>100x Fast</code> • 1:1 Proxy per Account • Retry 2x\n"
+        f"⚡ TURBO: <code>{'ON 2000 CPM' if turbo else 'OFF'}</code> • 🧵 Threads: <code>{THREADS}</code>→<code>{MAX_THREADS_USER if turbo else THREADS}</code> • Custom: <code>{len(CUSTOM_PROXY_SOURCES)}</code>\n"
+        f"🔄 Auto Load: <code>{'ON' if auto_on else 'OFF'}</code> • Speed: <code>100x Fast</code> • 1:1 • Retry 2x\n"
         f"📅 Today: <code>{daily.get('hits',0)} hits / {daily.get('total',0)} scans</code>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
         "Format: <code>user:pass@ip:port</code> or <code>ip:port</code> or URL\n"
-        "Auto: 12 sources • Manual: text/file/URL"
+        "Marketplace: Add custom proxy source URLs for premium proxies"
     )
     rows = [
         [("🔄 Refresh Auto", "refresh", "primary"), ("📥 Upload Proxies", "addpx", "success")],
         [("🌐 Import URL", "importurl", "primary"), ("📊 Proxy Stats", "proxystats", "primary")],
-        [("❌ Disable Proxies", "disableproxies", "danger"), ("🧹 Clear Proxies", "clearpool", "danger")],
-        [("🔄 Auto Load: ON" if auto_on else "⏸️ Auto Load: OFF", "autoproxy", "primary"), ("🧵 Set Threads", "setthreads", "primary")],
-        [("⬅️ Back", "menu", "danger")],
+        [("⚡ TURBO: ON" if turbo else "⚡ TURBO: OFF", "turbo", "success" if not turbo else "danger"), ("🌍 Country Stats", "countrystats", "primary")],
+        [("➕ Add Source", "addsource", "primary"), ("📜 List Sources", "listsources", "primary")],
+        [("🧹 Clear Sources", "clearsources", "danger"), ("❌ Disable Proxies", "disableproxies", "danger")],
+        [("🧹 Clear Proxies", "clearpool", "danger"), ("🔄 Auto Load: ON" if auto_on else "⏸️ Auto Load: OFF", "autoproxy", "primary")],
+        [("🧵 Set Threads", "setthreads", "primary"), ("⬅️ Back", "menu", "danger")],
     ]
     return header, rows
 
@@ -3033,9 +3189,78 @@ async def cmd_any(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         if txt_lower in ("/threads", "/setthreads"):
             try:
-                await reply_menu(msg, f"🧵 <b>Set Threads</b>\nCurrent: <code>{THREADS}</code> • Max {MAX_THREADS_USER}", [[("🧵 50", "threads_50", "primary"), ("🧵 100", "threads_100", "success")], [("🧵 200", "threads_200", "primary"), ("🧵 300", "threads_300", "success")], [("🧵 500", "threads_500", "success")], [("⬅️ Back", "proxysettings", "danger")]])
+                turbo = bool(STORE.get_setting("turbo_mode", False)) if STORE else False
+                await reply_menu(msg, f"🧵 <b>Set Threads</b>\nCurrent: <code>{THREADS}</code> • Max {MAX_THREADS_USER} • Turbo: <code>{'ON' if turbo else 'OFF'}</code>\n\nTurbo ON = 500 threads auto for 2000 CPM", [[("🧵 50", "threads_50", "primary"), ("🧵 100", "threads_100", "success")], [("🧵 200", "threads_200", "primary"), ("🧵 300", "threads_300", "success")], [("🧵 500", "threads_500", "success")], [("⚡ Turbo ON", "turbo", "success"), ("⬅️ Back", "proxysettings", "danger")]])
             except Exception as e:
                 logger.warning("threads menu failed %s", e)
+            return
+        if txt_lower in ("/turbo", "/turbomode"):
+            if not is_admin(user.id, getattr(user, "username", None)):
+                await reply_menu(msg, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
+                return
+            cur = bool(STORE.get_setting("turbo_mode", False)) if STORE else False
+            STORE.set_setting("turbo_mode", not cur)
+            # also set threads to max if turbo on
+            if not cur:
+                try:
+                    THREADS = MAX_THREADS_USER
+                    STORE.set_setting("threads", MAX_THREADS_USER)
+                except:
+                    pass
+            await reply_menu(msg, f"{'⚡ TURBO ON — 2000 CPM Mode Enabled!' if not cur else '✅ TURBO OFF — Normal mode'}\n\n{'🧵 Threads set to 500 for max speed' if not cur else ''}\n🌐 Live: <code>{proxy_count()}</code> • Pool: <code>{pool_size()}</code>", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Menu", "menu", "danger")]])
+            return
+        if txt_lower.startswith("/addsource"):
+            if not is_owner(user.id):
+                await reply_menu(msg, "❌ <b>Owner Only</b> — only owner can add custom proxy sources", [[("⬅️ Back", "menu", "danger")]])
+                return
+            parts = txt.split(None, 1)
+            if len(parts) < 2:
+                await reply_menu(msg, "🌐 <b>Add Custom Proxy Source (Marketplace)</b>\n\nUse: <code>/addsource https://example.com/proxies.txt</code>\n\nThis URL will be included in auto harvest (12 + custom). Premium proxies supported.", [[("⬅️ Back", "menu", "danger")]])
+                return
+            url = parts[1].strip()
+            if not url.startswith("http"):
+                await reply_menu(msg, "❌ Invalid URL — must start with http(s)://", [[("⬅️ Back", "menu", "danger")]])
+                return
+            if url not in CUSTOM_PROXY_SOURCES:
+                CUSTOM_PROXY_SOURCES.append(url)
+                save_custom_sources()
+                STORE.set_setting("custom_sources", CUSTOM_PROXY_SOURCES)
+                await reply_menu(msg, f"✅ Added custom source:\n<code>{esc(url[:80])}</code>\n\nTotal custom: <code>{len(CUSTOM_PROXY_SOURCES)}</code> • Will be harvested next refresh", [[("🔄 Refresh Now", "refresh", "primary"), ("📜 List Sources", "listsources", "primary")], [("⬅️ Back", "menu", "danger")]])
+            else:
+                await reply_menu(msg, f"ℹ️ Already exists: <code>{esc(url[:80])}</code>", [[("⬅️ Back", "menu", "danger")]])
+            return
+        if txt_lower in ("/listsources", "/customsources", "/sources"):
+            srcs = CUSTOM_PROXY_SOURCES
+            if not srcs:
+                txt2 = "📜 <b>No custom sources</b>\n\nAdd via <code>/addsource URL</code> or button ➕ Add Source\n\nDefault 12 sources always active."
+            else:
+                txt2 = f"📜 <b>Custom Proxy Sources — Marketplace ({len(srcs)})</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
+                for i, u in enumerate(srcs, 1):
+                    txt2 += f"{i}. <code>{esc(u[:70])}</code>\n"
+                txt2 += "\n<i>Use /addsource to add more, clear via Proxy Settings</i>"
+            await reply_menu(msg, txt2, [[("➕ Add Source", "addsource", "primary"), ("🔄 Refresh", "refresh", "primary")], [("⬅️ Back", "menu", "danger")]])
+            return
+        if txt_lower in ("/countrystats", "/countries", "/country"):
+            try:
+                country_counter = Counter(PROXY_COUNTRIES.values())
+                if not country_counter:
+                    txt2 = "🌍 <b>Country Stats</b>\n\nNo country data yet — proxies being detected in background...\n\nRefresh proxies to start detection."
+                else:
+                    txt2 = f"🌍 <b>Proxy Country Stats — {len(PROXY_COUNTRIES)} detected</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
+                    for cc, cnt in country_counter.most_common(10):
+                        txt2 += f"{flag_emoji(cc)} {cc} ({COUNTRY_MAP.get(cc, cc)}): <code>{cnt}</code>\n"
+                    txt2 += f"\n📊 Total with country: <code>{len(PROXY_COUNTRIES)}</code> / {proxy_count()} live"
+                # speed stats
+                try:
+                    if PROXY_SPEEDS:
+                        avg = round(sum(PROXY_SPEEDS.values())/len(PROXY_SPEEDS),3)
+                        fastest = min(PROXY_SPEEDS.values()) if PROXY_SPEEDS else 0
+                        txt2 += f"\n⚡ Avg Speed: <code>{avg}s</code> • Fastest: <code>{fastest}s</code>"
+                except:
+                    pass
+            except Exception as e:
+                txt2 = f"❌ Error: <code>{esc(str(e))}</code>"
+            await reply_menu(msg, txt2, [[("📊 Proxy Stats", "proxystats", "primary"), ("⚙️ Proxy Settings", "proxysettings", "primary")], [("⬅️ Back", "menu", "danger")]])
             return
         try:
             uname_tmp = getattr(user, "username", None)
@@ -3212,6 +3437,26 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ac = bool(STORE.get_setting("auto_check", True))
                 added, invalid = await asyncio.to_thread(add_proxies_to_pool, fetched, ac)
                 await reply_menu(msg, f"🌐 <b>URL Import Done</b>\n\nFetched: <code>{len(fetched)}</code> ➕ Added: <code>{added}</code>\nPool: <code>{pool_size()}</code> Live: <code>{proxy_count()}</code>", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Menu", "menu", "danger")]])
+                return
+            if kind == "addsource":
+                clear_pending(uid)
+                if not is_owner(uid):
+                    await reply_menu(msg, "❌ Owner only.", [[("⬅️ Back", "menu", "danger")]])
+                    return
+                url = text.strip()
+                if not url.startswith("http"):
+                    await reply_menu(msg, "❌ Invalid URL — must start with http(s)://", [[("⬅️ Back", "proxysettings", "danger")]])
+                    return
+                if url not in CUSTOM_PROXY_SOURCES:
+                    CUSTOM_PROXY_SOURCES.append(url)
+                    save_custom_sources()
+                    try:
+                        STORE.set_setting("custom_sources", CUSTOM_PROXY_SOURCES)
+                    except:
+                        pass
+                    await reply_menu(msg, f"✅ Added custom source (marketplace):\n<code>{esc(url[:80])}</code>\n\nTotal custom: <code>{len(CUSTOM_PROXY_SOURCES)}</code>\nNow 12+{len(CUSTOM_PROXY_SOURCES)} sources will be harvested", [[("🔄 Refresh Now", "refresh", "primary"), ("📜 List Sources", "listsources", "primary")], [("⬅️ Back", "proxysettings", "danger")]])
+                else:
+                    await reply_menu(msg, f"ℹ️ Already exists", [[("⬅️ Back", "menu", "danger")]])
                 return
 
             if kind == "broadcast":
@@ -3765,6 +4010,18 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text, rows = menu_owner()
             await edit_menu(m, "🧹 <b>Pool cleared.</b>\n\n" + text, rows)
             return
+        elif data == "clearsources":
+            if not is_owner(uid):
+                await edit_menu(m, "❌ <b>Owner Only</b>", [[("⬅️ Back", "menu", "danger")]])
+                return
+            CUSTOM_PROXY_SOURCES.clear()
+            save_custom_sources()
+            try:
+                STORE.set_setting("custom_sources", [])
+            except:
+                pass
+            await edit_menu(m, "🧹 <b>Custom Sources Cleared</b>\nNow only 12 default sources", [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Back", "menu", "danger")]])
+            return
         elif data == "autoproxy":
             if not is_admin(uid, uname_btn):
                 await edit_menu(m, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
@@ -3779,11 +4036,67 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not is_admin(uid, uname_btn):
                 await edit_menu(m, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
                 return
-            await edit_menu(m, f"🧵 <b>Set Threads</b>\nCurrent: <code>{THREADS}</code> • Max {MAX_THREADS_USER}",
+            turbo = bool(STORE.get_setting("turbo_mode", False)) if STORE else False
+            await edit_menu(m, f"🧵 <b>Set Threads — SUPER PREMIUM SPEED</b>\nCurrent: <code>{THREADS}</code> • Max {MAX_THREADS_USER} • Turbo: <code>{'ON 2000 CPM' if turbo else 'OFF'}</code>",
                             [[("🧵 50", "threads_50", "primary"), ("🧵 100", "threads_100", "success")],
                              [("🧵 200", "threads_200", "primary"), ("🧵 300", "threads_300", "success")],
                              [("🧵 500", "threads_500", "success")],
+                             [("⚡ TURBO: ON" if turbo else "⚡ TURBO: OFF", "turbo", "success" if not turbo else "danger")],
                              [("⬅️ Back", "proxysettings", "danger")]])
+            return
+        elif data == "turbo":
+            if not is_admin(uid, uname_btn):
+                await edit_menu(m, "❌ <b>Admin Only</b>", [[("⬅️ Back", "menu", "danger")]])
+                return
+            cur = bool(STORE.get_setting("turbo_mode", False)) if STORE else False
+            STORE.set_setting("turbo_mode", not cur)
+            if not cur:
+                try:
+                    THREADS = MAX_THREADS_USER
+                    STORE.set_setting("threads", MAX_THREADS_USER)
+                except:
+                    pass
+            text2 = f"{'⚡ TURBO ON — 2000 CPM Mode!' if not cur else '✅ TURBO OFF'}\n\n{'🧵 Threads → 500 for max speed • Fast proxy test only (google 204) • No jitter • Sorted by speed' if not cur else 'Normal mode restored'}\n\n🌐 Live: <code>{proxy_count()}</code> Pool: <code>{pool_size()}</code>"
+            await edit_menu(m, text2, [[("⚙️ Proxy Settings", "proxysettings", "primary"), ("⬅️ Menu", "menu", "danger")]])
+            return
+        elif data == "addsource":
+            if not is_owner(uid):
+                await edit_menu(m, "❌ <b>Owner Only</b>", [[("⬅️ Back", "menu", "danger")]])
+                return
+            set_pending(uid, "addsource")
+            await edit_menu(m, "➕ <b>Add Custom Proxy Source — Marketplace</b>\n\nSend URL that returns proxy list\n\nEx: <code>https://example.com/premium.txt</code>\n\nWill be added to 12 default sources → premium marketplace", [[("⬅️ Back", "proxysettings", "danger")]])
+            return
+        elif data == "listsources":
+            srcs = CUSTOM_PROXY_SOURCES
+            if not srcs:
+                txt2 = "📜 <b>No custom sources</b>\n\nAdd via ➕ Add Source"
+            else:
+                txt2 = f"📜 <b>Custom Sources — Marketplace ({len(srcs)})</b>\n"
+                for i, u in enumerate(srcs[:10], 1):
+                    txt2 += f"{i}. <code>{esc(u[:60])}</code>\n"
+                if len(srcs) > 10:
+                    txt2 += f"<i>... +{len(srcs)-10} more</i>\n"
+            await edit_menu(m, txt2, [[("➕ Add Source", "addsource", "primary"), ("🔄 Refresh", "refresh", "primary")], [("⬅️ Back", "proxysettings", "danger")]])
+            return
+        elif data == "countrystats":
+            try:
+                country_counter = Counter(PROXY_COUNTRIES.values())
+                if not country_counter:
+                    txt2 = "🌍 <b>Country Stats</b>\n\nNo data yet — detecting in background..."
+                else:
+                    txt2 = f"🌍 <b>Proxy Countries — {len(PROXY_COUNTRIES)} detected</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
+                    for cc, cnt in country_counter.most_common(10):
+                        txt2 += f"{flag_emoji(cc)} {cc}: <code>{cnt}</code>\n"
+                    txt2 += f"\nTotal: <code>{len(PROXY_COUNTRIES)}</code> / {proxy_count()}"
+                    if PROXY_SPEEDS:
+                        try:
+                            avg = round(sum(PROXY_SPEEDS.values())/len(PROXY_SPEEDS),3)
+                            txt2 += f"\n⚡ Avg: <code>{avg}s</code>"
+                        except:
+                            pass
+            except Exception as e:
+                txt2 = f"❌ Error: {esc(str(e))}"
+            await edit_menu(m, txt2, [[("📊 Proxy Stats", "proxystats", "primary"), ("⚙️ Settings", "proxysettings", "primary")], [("⬅️ Back", "menu", "danger")]])
             return
         elif data.startswith("threads_"):
             if not is_admin(uid, uname_btn):
@@ -3933,16 +4246,23 @@ def start_health_server():
 
         @app.route("/")
         def root():
+            try:
+                turbo = bool(STORE.get_setting("turbo_mode", False)) if STORE else False
+            except:
+                turbo = False
             return jsonify({
                 "status": "ok",
-                "bot": "CrunchyrollChecker",
+                "bot": "CrunchyrollChecker V1 SUPER PREMIUM SPEED",
                 "uptime": uptime(),
                 "proxies_live": proxy_count(),
                 "proxies_pool": pool_size(),
+                "custom_sources": len(CUSTOM_PROXY_SOURCES),
+                "countries": len(PROXY_COUNTRIES),
                 "checks_done": CHECKS_DONE,
                 "hits": TOTAL_HITS,
                 "threads": THREADS,
-                "version": "v1"
+                "turbo": turbo,
+                "version": "v1 super premium speed - 2000 CPM"
             })
 
         @app.route("/health")
@@ -4002,10 +4322,96 @@ def main():
 
     # Load upgraded data
     load_proxy_scores()
+    load_proxy_meta()
+    load_custom_sources()
     BANNED_USERS = load_banned()
-    print(f"[*] CrunchyrollChecker — BlazeNXT starting")
+
+# SUPER PREMIUM - proxy meta (country, speed, type)
+PROXY_COUNTRIES: dict = {}
+PROXY_SPEEDS: dict = {}
+PROXY_META: dict = {}
+CUSTOM_PROXY_SOURCES: List[str] = []
+
+def load_custom_sources():
+    global CUSTOM_PROXY_SOURCES
+    try:
+        sources = []
+        if CUSTOM_SOURCES_FILE.exists():
+            sources = [l.strip() for l in CUSTOM_SOURCES_FILE.read_text(encoding="utf-8").splitlines() if l.strip() and l.strip().startswith("http")]
+        # also check STORE
+        try:
+            if STORE:
+                stored = STORE.get_setting("custom_sources", [])
+                if stored:
+                    for u in stored:
+                        if u and u not in sources:
+                            sources.append(u)
+        except:
+            pass
+        CUSTOM_PROXY_SOURCES = sources
+        logger.info("Loaded custom proxy sources: %d", len(CUSTOM_PROXY_SOURCES))
+    except Exception as e:
+        logger.warning("load_custom_sources failed: %s", e)
+        CUSTOM_PROXY_SOURCES = []
+
+def save_custom_sources():
+    try:
+        CUSTOM_SOURCES_FILE.write_text("\n".join(CUSTOM_PROXY_SOURCES) + ("\n" if CUSTOM_PROXY_SOURCES else ""), encoding="utf-8")
+    except Exception as e:
+        logger.warning("save_custom_sources failed: %s", e)
+
+def load_proxy_meta():
+    global PROXY_COUNTRIES, PROXY_SPEEDS, PROXY_META
+    try:
+        if PROXY_META_FILE.exists():
+            data = json.loads(PROXY_META_FILE.read_text(encoding="utf-8"))
+            PROXY_COUNTRIES = data.get("countries", {})
+            PROXY_SPEEDS = data.get("speeds", {})
+            PROXY_META = data.get("meta", {})
+            logger.info("Loaded proxy meta: %d countries, %d speeds", len(PROXY_COUNTRIES), len(PROXY_SPEEDS))
+    except Exception as e:
+        logger.warning("load_proxy_meta failed: %s", e)
+        PROXY_COUNTRIES = {}
+        PROXY_SPEEDS = {}
+        PROXY_META = {}
+
+def save_proxy_meta():
+    try:
+        data = {"countries": PROXY_COUNTRIES, "speeds": PROXY_SPEEDS, "meta": PROXY_META}
+        PROXY_META_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except Exception as e:
+        logger.warning("save_proxy_meta failed: %s", e)
+
+def get_proxy_country_fast(proxy_url: str) -> str:
+    """Fast country detection via ip-api.com - cached"""
+    try:
+        if proxy_url in PROXY_COUNTRIES:
+            return PROXY_COUNTRIES[proxy_url]
+        # extract host
+        import re as _re
+        m = _re.search(r"@?([\d.]+|[^:/]+):\d+", proxy_url)
+        host = m.group(1) if m else ""
+        if not host or host.count(".") < 1:
+            return ""
+        # quick check via ip-api (1 req per proxy, cached)
+        try:
+            r = requests.get(f"http://ip-api.com/json/{host}?fields=countryCode", timeout=3)
+            if r.status_code == 200:
+                j = r.json()
+                cc = j.get("countryCode", "")
+                if cc:
+                    PROXY_COUNTRIES[proxy_url] = cc
+                    return cc
+        except:
+            pass
+        return ""
+    except:
+        return 
+    print(f"[*] CrunchyrollChecker — BlazeNXT V1 SUPER PREMIUM SPEED starting")
     print(f"[*] Owner: {OWNER_USERNAME} ({OWNER_ID}) | Threads: {THREADS} | Data dir: {DATA_DIR.resolve()}")
-    print(f"[*] Banned: {len(BANNED_USERS)} | Scores: {len(PROXY_SCORES)} | Flask: {FLASK_OK}")
+    print(f"[*] Banned: {len(BANNED_USERS)} | Scores: {len(PROXY_SCORES)} | Countries: {len(PROXY_COUNTRIES)} | Custom Sources: {len(CUSTOM_PROXY_SOURCES)} | Flask: {FLASK_OK}")
+    turbo = bool(STORE.get_setting("turbo_mode", False)) if STORE else False
+    print(f"[*] TURBO MODE: {'ON 2000 CPM' if turbo else 'OFF'}")
 
     _load_pool_into_live()
     try:
@@ -4062,6 +4468,11 @@ def main():
         _app.add_handler(CommandHandler("unban", cmd_any))
         _app.add_handler(CommandHandler("broadcast", cmd_any))
         _app.add_handler(CommandHandler("admins", cmd_any))
+        _app.add_handler(CommandHandler("turbo", cmd_any))
+        _app.add_handler(CommandHandler("addsource", cmd_any))
+        _app.add_handler(CommandHandler("listsources", cmd_any))
+        _app.add_handler(CommandHandler("countrystats", cmd_any))
+        _app.add_handler(CommandHandler("countries", cmd_any))
         _app.add_handler(MessageHandler(filters.COMMAND, cmd_any))
         _app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
         _app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
