@@ -166,9 +166,13 @@ PORT = int(_env("PORT", "8000") or 8000)  # Railway PORT only
 THREADS = 150  # powerful default 150 (up to 500)  # default 120, bot se 300 tak change kar sakte ho (Tools → Set Threads)
 PROXY_REFRESH_MINUTES = 5  # 24x7 auto — refresh every 5 min
 MAX_PROXIES_TO_KEEP = 100  # 24x7 keep more
-PROXY_TEST_TIMEOUT = 6  # faster for 800-1000 cpm powerful • 24x7 auto proxy • Smart scoring
-PROXY_TEST_SAMPLE = 250
-CHECK_TIMEOUT = 15
+PROXY_TEST_TIMEOUT = 4  # fast  # faster for 800-1000 cpm powerful • 24x7 auto proxy • Smart scoring
+PROXY_TEST_SAMPLE = 300  # more
+CHECK_TIMEOUT = 10  # fast secure
+# Secure: per-user rate limit
+USER_LAST_CHECK: dict = {}
+USER_LOCK = threading.Lock()
+SECURE_LOG = True
 MAX_FILE_MB = 20  # Telegram Bot API download limit
 PREMIUM_ONLY_DEFAULT = True
 MAX_PASTED_CREDS = 2000
@@ -347,12 +351,19 @@ COUNTRY_MAP = {
 _tls = threading.local()
 
 def get_session() -> requests.Session:
-    """Thread-local session with sane connection pooling."""
+    """Thread-local session — fast + secure (100 pools, keep-alive, retry)."""
     s = getattr(_tls, "s", None)
     if s is None:
         s = requests.Session()
-        s.mount("https://", HTTPAdapter(pool_connections=20, pool_maxsize=20))
-        s.mount("http://", HTTPAdapter(pool_connections=20, pool_maxsize=20))
+        s.headers.update({"Accept-Encoding": "gzip", "Connection": "keep-alive"})
+        try:
+            retry = Retry(total=1, backoff_factor=0.1, status_forcelist=[429, 500, 502, 503, 504])
+            adapter = HTTPAdapter(pool_connections=100, pool_maxsize=100, max_retries=retry, pool_block=False)
+            s.mount("https://", adapter)
+            s.mount("http://", adapter)
+        except Exception:
+            s.mount("https://", HTTPAdapter(pool_connections=100, pool_maxsize=100))
+            s.mount("http://", HTTPAdapter(pool_connections=100, pool_maxsize=100))
         _tls.s = s
     return s
 
@@ -2012,6 +2023,18 @@ async def send_hit_cards(msg, entries: List[dict], cap: int = MAX_HIT_CARDS) -> 
 
 # ===================== CHECK RUNNER — BlazeNXT PREMIUM =====================
 async def _run_and_report(msg, uid: int, text: str):
+    # Secure: 5 sec cooldown + 1 check at a time
+    with USER_LOCK:
+        now = time.time()
+        last = USER_LAST_CHECK.get(uid, 0)
+        if now - last < 5:
+            await reply_menu(msg, "⏳ <b>Slow down</b> — wait 5 sec between checks.", [[("⬅️ Back", "menu", "danger")]])
+            return
+        if USER_LAST_CHECK.get(f"busy_{uid}"):
+            await reply_menu(msg, "⏳ <b>Busy</b> — one check at a time.", [[("⬅️ Back", "menu", "danger")]])
+            return
+        USER_LAST_CHECK[f"busy_{uid}"] = True
+        USER_LAST_CHECK[uid] = now
     line_count = max(1, text.count("\n") + 1)
     creds_preview = len(extract_credentials(text))
     # Premium initial card — mimics BlazeNXT "CRUNCHYROLL Scan — Live 0.6%"
@@ -2085,6 +2108,8 @@ async def _run_and_report(msg, uid: int, text: str):
     try:
         results = await asyncio.to_thread(run_check, text, reporter, _hit_cb)
     except Exception as e:
+        with USER_LOCK:
+            USER_LAST_CHECK.pop(f"busy_{uid}", None)
         await note.edit_text(f"❌ <b>Check error</b>\n━━━━━━━━━━━━━━━━━━━━━\n<code>{esc(str(e)[:120])}</code>",
                              parse_mode=ParseMode.HTML)
         return
@@ -2119,8 +2144,12 @@ async def _run_and_report(msg, uid: int, text: str):
         tail = f"\n<i>…+{extra} more in the export file</i>" if extra > 0 else ""
         rows = [[("🔁 Check Again", "check", "success"), ("📂 Check File", "file", "primary")],
                 [("⬅️ Main Menu", "menu", "danger")]]
+        with USER_LOCK:
+            USER_LAST_CHECK.pop(f"busy_{uid}", None)
         await reply_menu(msg, f"📬 <b>Hit cards sent:</b> {sent} {tail}", rows)
     else:
+        with USER_LOCK:
+            USER_LAST_CHECK.pop(f"busy_{uid}", None)
         await reply_menu(msg, "😕 No hits this time.",
                          [[("🔁 Check Again", "check", "success"), ("📂 Check File", "file", "primary")],
                           [("⬅️ Main Menu", "menu", "danger")]])
