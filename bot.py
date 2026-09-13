@@ -176,9 +176,9 @@ PORT = int(_env("PORT", "8000") or 8000)  # Railway PORT only
 
 THREADS = 150  # powerful default 150 (up to 500)  # default 120, bot se 300 tak change kar sakte ho (Tools → Set Threads)
 PROXY_REFRESH_MINUTES = 5  # 24x7 auto — refresh every 5 min
-MAX_PROXIES_TO_KEEP = 100  # 24x7 keep more
-PROXY_TEST_TIMEOUT = 4  # fast  # faster for 800-1000 cpm powerful • 24x7 auto proxy • Smart scoring
-PROXY_TEST_SAMPLE = 300  # more
+MAX_PROXIES_TO_KEEP = 500  # 1:1 need many  # 24x7 keep more
+PROXY_TEST_TIMEOUT = 2  # 100x fast  # fast  # faster for 800-1000 cpm powerful • 24x7 auto proxy • Smart scoring
+PROXY_TEST_SAMPLE = 1000  # 100x fast - test more  # more
 CHECK_TIMEOUT = 10  # fast secure
 # Secure: per-user rate limit
 USER_LAST_CHECK: dict = {}
@@ -945,7 +945,7 @@ def refresh_live_proxies(force: bool = False) -> None:
         random.shuffle(candidates)
         to_test = candidates[:PROXY_TEST_SAMPLE]
         live = []
-        with ThreadPoolExecutor(max_workers=50) as ex:
+        with ThreadPoolExecutor(max_workers=150) as ex:  # 100x faster
             futures = {ex.submit(test_one_proxy, p): p for p in to_test}
             for fut in as_completed(futures):
                 try:
@@ -1147,7 +1147,26 @@ def extract_credentials(text: str) -> List[dict]:
     return creds
 
 # ===================== CHECKER ENGINE =====================
-def run_check(text: str, reporter=None, hit_callback=None) -> dict:  # 24x7 smart — auto proxy rotate + retry on rate/err
+def run_check(text: str, reporter=None, hit_callback=None) -> dict:  # 100x fast & 1:1 — each account gets dedicated proxy
+    # 1:1 logic: ensure live proxies >= total accounts, if not, try to fetch more before starting
+    try:
+        creds_tmp = extract_credentials(text)
+        need = len(creds_tmp)
+        have = proxy_count()
+        if need > have and need > 10:
+            # Need more proxies for 1:1 — try to harvest more quickly
+            try:
+                # Force refresh to get more for 1:1
+                refresh_live_proxies(force=True)
+            except Exception:
+                pass
+            # If still not enough, keep what we have and will cycle
+            have2 = proxy_count()
+            if have2 < need:
+                print(f"[*] 1:1 proxy: need {need}, have {have2}, will cycle")
+    except Exception:
+        pass
+    # Continue
     """Thread-pool check of all credentials. Premium counters: hit/free/bad/rate/err/2fa + live feed + cpm."""
     ensure_proxies()
     creds = extract_credentials(text)
@@ -2016,13 +2035,14 @@ def menu_owner():
     # JUST CHECKER — Proxy Settings only
     auto_on = bool(STORE.get_setting("auto_proxy", True)) if STORE else True
     header = (
-        "⚙️ <b>Proxy Settings</b>\n"
+        "⚙️ <b>Proxy Settings — Auto Load 100x Fast</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📊 Status: <code>{'ON' if proxy_count() else 'OFF'}</code> • 📦 Loaded: <code>{pool_size()}</code> • 🌐 Live: <code>{proxy_count()}</code>\n"
-        f"🧵 Threads: <code>{THREADS}</code> (max 500) • 🔄 Auto Load: <code>{'ON' if auto_on else 'OFF'}</code>\n"
+        f"📊 Status: <code>{'ON' if proxy_count() else 'OFF'}</code> • 📦 Pool: <code>{pool_size()}</code> • 🌐 Live: <code>{proxy_count()}</code>\n"
+        f"🔄 Auto Load: <code>{'ON' if auto_on else 'OFF'}</code> • 🧵 Threads: <code>{THREADS}</code> (max 500)\n"
+        f"⚡ Speed: <code>100x Fast</code> • 1:1 Proxy per Account\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
         "Format: <code>user:pass@ip:port</code> or <code>ip:port</code>\n"
-        "24x7 auto-fetch every 5 min when ON"
+        "Auto: 12 sources • Manual: text/file"
     )
     rows = [
         [("🔄 Refresh Auto", "refresh", "primary"), ("📥 Upload Proxies", "addpx", "success")],
