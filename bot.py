@@ -2224,14 +2224,14 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                          [[("🧪 Test Proxies", "proxysettings", "success"), ("💎 Check Account", "check", "success")], [("⬅️ Menu", "menu", "danger")]])
         return
 
+    # Fix: file check should work even if pending is creds/addpx etc — clear and allow
     if pending and pending["kind"] != "file":
-        await msg.reply_text(
-            "⏳ I'm waiting for a different input — press ⬅️ Back, or send the right thing."
-        )
-        return
+        # Don't block file upload — just clear stale pending (e.g., creds from previous Check Account)
+        clear_pending(uid)
+        pending = None
     if pending:
         clear_pending(uid)
-    elif not _has_access(uid):
+    if not _has_access(uid):
         text, rows = menu_main(uid)
         await reply_menu(msg, text, rows)
         return
@@ -2286,6 +2286,8 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_menu(m, "💎 <b>Check Account</b>\n\nSend <code>EMAIL:PASS</code> — one or many lines.\nExample: <code>user@gmail.com:pass123</code>", [[("⬅️ Back", "menu", "danger")]])
         return
     elif data == "file":
+        clear_pending(uid)
+        set_pending(uid, "file")
         await edit_menu(m, "📂 <b>Check File</b>\n\nSend me your file.", [[("⬅️ Back", "menu", "danger")]])
         return
     elif data == "status":
